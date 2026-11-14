@@ -173,32 +173,7 @@ async fn pasted_image_appears_as_a_thumbnail_attachment(cx: &mut TestAppContext)
 }
 
 #[gpui_kit::test]
-fn placeholder_uses_the_markdown_editors_inset_and_line_grid(cx: &mut TestAppContext) {
-    let (handle, _) = open_workspace(cx);
-
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("tool-ai", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let editor = window.find("ai-composer-editor").bounds();
-        let placeholder = window.find("ai-composer-placeholder").bounds();
-        assert_eq!(placeholder.origin.x - editor.origin.x, px(10.));
-        assert_eq!(placeholder.origin.y - editor.origin.y, px(8.));
-        assert_eq!(
-            editor.origin.x + editor.size.width - placeholder.origin.x - placeholder.size.width,
-            px(10.)
-        );
-    })
-    .unwrap();
-}
-
-#[gpui_kit::test]
-fn enter_at_the_last_line_grows_the_composer_immediately(cx: &mut TestAppContext) {
+fn shift_enter_at_the_last_line_grows_the_composer_immediately(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
 
     cx.update_window(handle.into(), |_, window, cx| {
@@ -223,8 +198,10 @@ fn enter_at_the_last_line_grows_the_composer_immediately(cx: &mut TestAppContext
         })
         .unwrap();
 
-    cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
-        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("shift-enter", cx)
+    })
+    .unwrap();
     cx.run_until_parked();
 
     let after = cx
@@ -235,7 +212,7 @@ fn enter_at_the_last_line_grows_the_composer_immediately(cx: &mut TestAppContext
         .unwrap();
     assert!(
         after > before,
-        "Enter on the last line should grow the composer immediately: {before:?} -> {after:?}"
+        "Shift+Enter on the last line should grow the composer immediately: {before:?} -> {after:?}"
     );
 }
 

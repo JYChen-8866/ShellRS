@@ -189,6 +189,7 @@ pub struct Palette {
     pub search_match: Hsla,
     pub active_search_match: Hsla,
     pub accent: Hsla,
+    pub accent_foreground: Hsla,
     pub added: Hsla,
     pub removed: Hsla,
     is_dark: bool,
@@ -226,6 +227,7 @@ impl Palette {
                 0.70
             }),
             accent: theme.accent,
+            accent_foreground: theme.accent_foreground,
             added: theme.success,
             removed: theme.danger,
             is_dark: theme.is_dark,
@@ -1472,7 +1474,7 @@ fn marker_text(label: String, width: f32, ctx: &Ctx) -> AnyElement {
         .flex_none()
         .text_size(px(ctx.metrics.text_size))
         .line_height(px(ctx.metrics.line_height))
-        .text_color(ctx.palette.tertiary)
+        .text_color(ctx.palette.secondary)
         .child(SharedString::from(label))
         .into_any_element()
 }
@@ -1488,7 +1490,7 @@ fn checkbox(checked: bool, ctx: &Ctx) -> AnyElement {
         .border_color(if checked {
             ctx.palette.accent
         } else {
-            ctx.palette.border
+            ctx.palette.secondary
         })
         .when(checked, |element| element.bg(ctx.palette.accent))
         .flex()
@@ -1498,7 +1500,7 @@ fn checkbox(checked: bool, ctx: &Ctx) -> AnyElement {
             element.child(
                 Icon::new(IconName::Check)
                     .with_size(px(box_size - 4.0))
-                    .text_color(ctx.palette.inset),
+                    .text_color(ctx.palette.accent_foreground),
             )
         })
         .into_any_element()

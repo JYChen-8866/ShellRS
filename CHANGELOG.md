@@ -4,6 +4,17 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.20] - 2026-11-14
+
+### Added
+
+- An AI assistant in the right sidebar, powered by the local Claude Code CLI. It keeps conversations per host, streams Markdown answers, shows tool activity and permission requests, and can attach files and images.
+- AI messages support Markdown rendering, image previews, image copying, queued prompts, model and permission selection, and live context-window usage. Press Ctrl+Enter to send and Enter for a new line.
+
+### Fixed
+
+- Packaged macOS builds now find Claude Code when it is installed in the usual user or Homebrew locations.
+
 ## [0.1.19]
 
 ### Added

@@ -23,7 +23,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     diff::{Diff, DiffFile, DiffState},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     list::{List, ListDelegate, ListItem, ListState},
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     message_scroller::{MessageScroller, MessageScrollerState},
@@ -56,16 +56,14 @@ use crate::settings::{
 use crate::shared::open_image_preview;
 use crate::terminal::TerminalFont;
 use claude_codes::{ClaudeModel, MediaType};
-use markdown_editor::{
-    BlockEditorEvent, BlockEditorState, ClipboardPolicy, ImagePolicy, SubmitPolicy,
-    component::BlockEditor as MarkdownBlockEditor,
-};
 
 /// Keep provider chunks off the UI thread until a full presentation frame is
 /// due. Waku's streaming work showed that one commit per token can cost far
 /// more than the parsing itself; ~8 Hz keeps output responsive while bounding
 /// repaint, layout and markdown work.
 const AI_STREAM_COMMIT_INTERVAL: Duration = Duration::from_millis(120);
+/// Width that fits the queued-message actions: 编辑 / 调整方向 / 关闭 / 复制.
+const QUEUED_MESSAGE_ACTIONS_MIN_WIDTH: f32 = 10.5;
 
 fn is_send_shortcut(keystroke: &Keystroke) -> bool {
     keystroke.key == "enter"
@@ -190,7 +188,7 @@ impl Render for ThinkingSpinner {
 pub struct AiAssistantPanel {
     settings: Entity<SettingsStore>,
     host: Option<SharedString>,
-    input: Entity<BlockEditorState>,
+    input: Entity<TextareaState>,
     messages: Rc<Vec<Message>>,
     claude: Option<ClaudeBridge>,
     session_id: Option<Uuid>,
@@ -231,15 +229,11 @@ impl AiAssistantPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let ai = settings.read(cx).settings().ai;
-        let composer_scroll = ScrollHandle::new();
-        let input_scroll = composer_scroll.clone();
         let input = cx.new(|cx| {
-            let mut input = BlockEditorState::new(window, cx)
-                .with_submit_policy(SubmitPolicy::Newline)
-                .with_clipboard_policy(ClipboardPolicy::Host)
-                .with_image_policy(ImagePolicy::Placeholder);
-            input.set_scroll_handle(input_scroll);
-            input
+            TextareaState::new(window, cx)
+                .submit_on_enter(false)
+                .soft_wrap(true)
+                .auto_grow(3, 7)
         });
         let input_focus = input.read(cx).focus_handle(cx);
         let skill_panel = cx.weak_entity();
@@ -266,41 +260,13 @@ impl AiAssistantPanel {
             cx.subscribe_in(
                 &input,
                 window,
-                |this, _input, event: &BlockEditorEvent, window, cx| match event {
-                    BlockEditorEvent::Changed { .. } => {
+                |this, _input, event: &InputEvent, _window, cx| {
+                    if let InputEvent::Change = event {
                         this.skill_menu_index = 0;
                         this.skill_menu_dismissed = false;
                         this.skill_menu_scroll.scroll_to_item(0);
-                        cx.defer_in(window, move |this, _window, cx| {
-                            this.input.update(cx, |input, cx| input.reveal_caret(cx));
-                        });
                         cx.notify();
                     }
-                    BlockEditorEvent::SelectionChanged => {
-                        this.sync_skill_trigger(cx);
-                        cx.notify();
-                    }
-                    BlockEditorEvent::PasteRequested { request, item } => {
-                        let (handled, paths) = pasted_composer_attachments(item, window, cx);
-                        if !paths.is_empty() {
-                            for path in paths {
-                                if !this.attachments.contains(&path) {
-                                    this.attachments.push(path);
-                                }
-                            }
-                            cx.notify();
-                        }
-                        let text = (!handled).then(|| item.text()).flatten();
-                        let request = request.clone();
-                        cx.defer_in(window, move |this, _window, cx| {
-                            this.input.update(cx, |input, cx| {
-                                input.apply_paste(&request, text.as_deref(), cx);
-                            });
-                        });
-                    }
-                    BlockEditorEvent::LinkClicked { url } => cx.open_url(url.as_ref()),
-                    BlockEditorEvent::SubmitRequested => this.send(window, cx),
-                    _ => {}
                 },
             ),
             cx.observe_in(&settings, window, |this, settings, _window, cx| {
@@ -361,13 +327,12 @@ impl AiAssistantPanel {
     }
 
     fn input_source(&self, cx: &App) -> String {
-        self.input.read(cx).source()
+        self.input.read(cx).value().to_string()
     }
 
-    fn set_input_source(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.input.update(cx, |input, cx| {
-            let _ = input.set_source(text, cx);
-        });
+    fn set_input_source(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.input
+            .update(cx, |input, cx| input.set_value(text, window, cx));
     }
 
     fn focus_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -398,8 +363,10 @@ impl AiAssistantPanel {
     }
 
     fn detect_skill_trigger(&self, cx: &App) -> Option<SkillTrigger> {
-        let before = self.input.read(cx).caret_prefix_snapshot()?;
-        let caret = before.len();
+        let input = self.input.read(cx);
+        let value = input.value();
+        let caret = input.selected_range().end;
+        let before = value.get(..caret)?;
         let start = before
             .char_indices()
             .rev()
@@ -512,10 +479,11 @@ impl AiAssistantPanel {
         let mut text = value[..trigger.range.start].to_string();
         text.push_str(&insert);
         text.push_str(&value[end..]);
+        let caret = trigger.range.start + insert.len();
         self.skill_trigger = None;
-        self.set_input_source(&text, cx);
         self.input.update(cx, |input, cx| {
-            let _ = input.select_end(cx);
+            input.set_value(text, window, cx);
+            input.set_selected_range(caret..caret, cx);
         });
         self.focus_input(window, cx);
         cx.notify();
@@ -619,7 +587,7 @@ impl AiAssistantPanel {
         } else {
             text.clone()
         };
-        self.set_input_source("", cx);
+        self.set_input_source("", window, cx);
         self.messages_mut().push(Message {
             author: Author::User,
             text: shown,
@@ -649,7 +617,7 @@ impl AiAssistantPanel {
         });
         let prompt = claude::ClaudePrompt {
             text: match &self.host {
-                Some(host) => format!("当前 SSH 主机：{host}\n\n{text}{file_context}"),
+                Some(host) => format!("SSH host: {host}\n\n{text}{file_context}"),
                 None => format!("{text}{file_context}"),
             },
             images,
@@ -776,7 +744,7 @@ impl AiAssistantPanel {
         self.shift_queue_after_removal(position);
         self.pending_turns = self.pending_turns.saturating_sub(1);
         self.busy = self.pending_turns > 0;
-        self.set_input_source(&message.text, cx);
+        self.set_input_source(&message.text, window, cx);
         self.focus_input(window, cx);
         self.sync_message_scroller(cx);
         cx.notify();
@@ -1480,6 +1448,7 @@ impl AiAssistantPanel {
         let skill_menu = self.render_skill_menu_overlay(cx);
         let bounds_cell = self.skill_menu_bounds.clone();
         let cwd = self.current_cwd(cx);
+        let paste_panel = cx.entity();
         let context_meter = context_meter(self.context_usage, cx);
 
         let toolbar = h_flex()
@@ -1614,35 +1583,36 @@ impl AiAssistantPanel {
                         div()
                             .relative()
                             .w_full()
-                            .text_sm()
-                            // Match the block editor's 1.5rem row box so the
-                            // placeholder baseline and caret share one grid.
-                            .line_height(rems(1.5))
                             .when(show_placeholder, |this| {
                                 this.child(
                                     div()
                                         .id("ai-composer-placeholder")
                                         .test_support()
                                         .absolute()
-                                        // Same insets as markdown_editor::component.
-                                        .top(rems(0.5))
-                                        .left(rems(0.625))
-                                        .right(rems(0.625))
+                                        .top_0()
+                                        .left_0()
+                                        .right_0()
+                                        // Match the textarea's `Size::Medium` text
+                                        // inset, plus the 10px its text element
+                                        // reserves on the right before wrapping.
+                                        .pl(px(10.))
+                                        .pr(px(20.))
+                                        .pt(px(8.))
+                                        .text_sm()
+                                        .line_height(rems(1.25))
                                         .text_color(cx.theme().muted_foreground)
                                         .child(placeholder.clone()),
                                 )
                             })
                             .child(
-                                div()
-                                    .id("ai-composer-editor")
-                                    .test_support()
+                                Textarea::new(&self.input)
+                                    .appearance(false)
+                                    .bordered(false)
                                     .aria_label(placeholder)
                                     .w_full()
-                                    .child(
-                                        MarkdownBlockEditor::new(&self.input)
-                                            .auto_grow(3, 7)
-                                            .toolbar(false),
-                                    ),
+                                    .on_paste(move |item, window, cx| {
+                                        paste_composer_attachments(&paste_panel, item, window, cx)
+                                    }),
                             ),
                     ),
             )
@@ -1928,11 +1898,45 @@ fn render_message_row(
         return Empty.into_any_element();
     };
     let id = SharedString::from(format!("ai-message-{ix}"));
+    let thinking_background = cx.theme().primary.opacity(0.08);
     match message.author {
         Author::User => {
             let group = SharedString::from(format!("ai-user-message-{ix}"));
             let copied = message.text.clone();
             let queued_copy = copied.clone();
+            let bubble = v_flex()
+                .min_w_0()
+                .when(message.text.contains('\n'), |bubble| {
+                    bubble.w(relative(0.75))
+                })
+                .when(!message.text.contains('\n'), |bubble| bubble.max_w_3_4())
+                .when(message.queue_position.is_some(), |bubble| {
+                    bubble.min_w(rems(QUEUED_MESSAGE_ACTIONS_MIN_WIDTH))
+                })
+                .rounded(cx.theme().radius)
+                .bg(thinking_background)
+                .when_some(message.queue_position, |bubble, position| {
+                    bubble.gap_1().child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(Icon::new(CatalogIcon::Clock).xsmall())
+                            .child(t!("ai.message.queue_position", position = position)),
+                    )
+                })
+                .px_3()
+                .py_2()
+                .text_sm()
+                .child(render_message_markdown(
+                    &message,
+                    ix,
+                    false,
+                    cwd,
+                    markdown_selection,
+                    cx,
+                ));
             v_flex()
                 .id(id)
                 .w_full()
@@ -1982,42 +1986,10 @@ fn render_message_row(
                         )
                 }))
                 .child(
-                    h_flex().w_full().justify_end().child(
-                        v_flex()
-                            .max_w_3_4()
-                            .when(message.queue_position.is_some(), |bubble| {
-                                bubble.min_w(rems(10.5))
-                            })
-                            .rounded(cx.theme().radius)
-                            .when_some(message.queue_position, |bubble, position| {
-                                bubble.gap_1().bg(cx.theme().muted).child(
-                                    h_flex()
-                                        .items_center()
-                                        .gap_1()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(Icon::new(CatalogIcon::Clock).xsmall())
-                                        .child(t!(
-                                            "ai.message.queue_position",
-                                            position = position
-                                        )),
-                                )
-                            })
-                            .when(message.queue_position.is_none(), |bubble| {
-                                bubble.bg(cx.theme().primary.opacity(0.12))
-                            })
-                            .px_3()
-                            .py_2()
-                            .text_sm()
-                            .child(render_message_markdown(
-                                &message,
-                                ix,
-                                false,
-                                cwd,
-                                markdown_selection,
-                                cx,
-                            )),
-                    ),
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .child(bubble.into_any_element()),
                 )
                 .when_some(message.queue_position, |row, position| {
                     let edit_panel = panel.clone();
@@ -2025,7 +1997,7 @@ fn render_message_row(
                     let close_panel = panel.clone();
                     row.child(
                         h_flex()
-                            .min_w(rems(10.5))
+                            .min_w(rems(QUEUED_MESSAGE_ACTIONS_MIN_WIDTH))
                             .max_w_3_4()
                             .justify_end()
                             .items_center()
@@ -2168,7 +2140,7 @@ fn render_message_row(
                             .items_center()
                             .gap_2()
                             .rounded_full()
-                            .bg(cx.theme().primary.opacity(0.08))
+                            .bg(thinking_background)
                             .px_2()
                             .py_1()
                             .child(thinking_spinner)
@@ -3195,7 +3167,13 @@ impl Render for AiAssistantPanel {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, window, cx| {
-                                    window.focus(&this.focus_handle, cx);
+                                    // The composer is an absolute child of this
+                                    // content area. A click inside it already
+                                    // focuses the Textarea, so do not let the
+                                    // message-area fallback steal that focus.
+                                    if !this.input.read(cx).focus_handle(cx).is_focused(window) {
+                                        window.focus(&this.focus_handle, cx);
+                                    }
                                 }),
                             );
                         if self.messages.is_empty() {
@@ -3561,11 +3539,12 @@ fn render_composer_attachment(
     }
 }
 
-fn pasted_composer_attachments(
+fn paste_composer_attachments(
+    panel: &Entity<AiAssistantPanel>,
     item: &ClipboardItem,
     window: &mut Window,
     cx: &mut App,
-) -> (bool, Vec<PathBuf>) {
+) -> bool {
     let mut handled = false;
     let mut paths = Vec::new();
     for entry in item.entries() {
@@ -3586,7 +3565,17 @@ fn pasted_composer_attachments(
             ClipboardEntry::String(_) => {}
         }
     }
-    (handled, paths)
+    if !paths.is_empty() {
+        panel.update(cx, |panel, cx| {
+            for path in paths {
+                if !panel.attachments.contains(&path) {
+                    panel.attachments.push(path);
+                }
+            }
+            cx.notify();
+        });
+    }
+    handled
 }
 
 fn save_pasted_image(image: &Image) -> Result<PathBuf, SharedString> {
@@ -4336,11 +4325,15 @@ mod tests {
     use super::{
         AiAssistantPanel, Author, ClaudeEvent, Message, ToolCall, ToolStatus, append_tool_call,
         claude_media_type, coalesce_claude_events, decode_data_image, format_tokens,
-        image_format_for_path, is_image_path, is_send_shortcut, sniff_image_format, streaming_tail,
-        tool_file_change, tool_group_title, tool_input_text, tool_summary, tool_title_key,
+        image_format_for_path, is_image_path, sniff_image_format, streaming_tail, tool_file_change,
+        tool_group_title, tool_input_text, tool_summary, tool_title_key,
     };
     use claude_codes::MediaType;
-    use gpui_kit::{AppContext as _, Context, ImageFormat, IntoElement, Render, Window, div};
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{
+        AppContext as _, Context, Entity, Focusable as _, ImageFormat, IntoElement, ParentElement,
+        Render, Styled, Window, div,
+    };
     use std::{cell::RefCell, path::Path, rc::Rc};
 
     #[test]
@@ -4350,21 +4343,6 @@ mod tests {
         assert_eq!(format_tokens(1_500), "1.5K");
         assert_eq!(format_tokens(200_000), "200.0K");
         assert_eq!(format_tokens(1_000_000), "1.0M");
-    }
-
-    #[test]
-    fn only_control_enter_is_the_send_shortcut() {
-        let keystroke = |key: &str, control: bool| gpui_kit::Keystroke {
-            key: key.to_owned(),
-            modifiers: gpui_kit::Modifiers {
-                control,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        assert!(is_send_shortcut(&keystroke("enter", true)));
-        assert!(!is_send_shortcut(&keystroke("enter", false)));
-        assert!(!is_send_shortcut(&keystroke("space", true)));
     }
 
     #[test]
@@ -4537,6 +4515,72 @@ mod tests {
         );
     }
 
+    struct ComposerFocusHarness(Entity<AiAssistantPanel>);
+
+    impl Render for ComposerFocusHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(gpui_kit::px(280.))
+                .h(gpui_kit::px(600.))
+                .relative()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .absolute()
+                        .left_3()
+                        .right_3()
+                        .bottom_3()
+                        .child(self.0.clone()),
+                )
+        }
+    }
+
+    #[gpui_kit::test]
+    fn clicking_the_upper_composer_focuses_the_textarea(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(crate::init);
+        let slot = Rc::new(RefCell::new(None));
+        let panel_slot = slot.clone();
+        let (_root, cx) = cx.add_window_view(move |window, cx| {
+            let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+            let panel = cx.new(|cx| AiAssistantPanel::new(settings, window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.set_target(Some("web-01".into()), true, cx);
+                panel.input.update(cx, |input, cx| {
+                    let source = (0..20)
+                        .map(|i| format!("line {i}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    input.set_value(source, window, cx);
+                });
+            });
+            *panel_slot.borrow_mut() = Some(panel.clone());
+            ComposerFocusHarness(panel)
+        });
+        let panel = slot.borrow_mut().take().unwrap();
+        let draw = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        for _ in 0..5 {
+            draw(cx);
+        }
+        let composer = cx.update(|window, _| window.find("ai-composer").bounds());
+        let at = gpui_kit::point(composer.center().x, composer.top() + gpui_kit::px(16.));
+        cx.simulate_click(at, Default::default());
+        let focused = cx.update(|window, cx| {
+            panel
+                .read(cx)
+                .input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        });
+        assert!(
+            focused,
+            "clicking the upper half of {composer:?} should focus the textarea"
+        );
+    }
+
     struct Probe;
 
     impl Render for Probe {
@@ -4666,7 +4710,7 @@ mod tests {
                 panel.busy = true;
 
                 panel.edit_queued_message(1, window, cx);
-                assert_eq!(panel.input.read(cx).source().as_str(), "first");
+                assert_eq!(panel.input.read(cx).value().as_ref(), "first");
                 assert_eq!(panel.pending_turns, 2);
                 assert_eq!(panel.messages.len(), 1);
                 assert_eq!(panel.messages[0].queue_position, Some(1));

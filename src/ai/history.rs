@@ -191,7 +191,7 @@ fn user_text(value: &Value) -> Option<String> {
         return None;
     }
     let text = text
-        .strip_prefix("当前 SSH 主机：")
+        .strip_prefix("SSH host: ")
         .and_then(|rest| rest.split_once("\n\n").map(|(_, prompt)| prompt))
         .unwrap_or(text)
         .trim();
@@ -260,9 +260,9 @@ mod tests {
             .join("59453746-2cf6-4b2d-a5f7-05127103348b.jsonl");
         let mut transcript = fs::File::create(&file).unwrap();
         for line in [
-            r#"{"type":"user","sessionId":"59453746-2cf6-4b2d-a5f7-05127103348b","timestamp":"2026-11-13T14:28:59.116Z","message":{"role":"user","content":[{"type":"text","text":"当前 SSH 主机：web-01\n\n分析一下磁盘"}]}}"#,
-            r#"{"type":"assistant","sessionId":"59453746-2cf6-4b2d-a5f7-05127103348b","timestamp":"2026-11-13T14:29:19.273Z","message":{"model":"claude-sonnet-5-5","content":[{"type":"text","text":"先看 df -h。"}]}}"#,
-            r#"{"type":"user","sessionId":"59453746-2cf6-4b2d-a5f7-05127103348b","timestamp":"2026-11-13T14:30:00.000Z","message":{"role":"user","content":[{"type":"text","text":"继续"}]}}"#,
+            r#"{"type":"user","sessionId":"59453746-2cf6-4b2d-a5f7-05127103348b","timestamp":"2026-11-13T14:28:59.116Z","message":{"role":"user","content":[{"type":"text","text":"SSH host: web-01\n\nanalyze the disk"}]}}"#,
+            r#"{"type":"assistant","sessionId":"59453746-2cf6-4b2d-a5f7-05127103348b","timestamp":"2026-11-13T14:29:19.273Z","message":{"model":"claude-sonnet-5-5","content":[{"type":"text","text":"Check df -h first."}]}}"#,
+            r#"{"type":"user","sessionId":"59453746-2cf6-4b2d-a5f7-05127103348b","timestamp":"2026-11-13T14:30:00.000Z","message":{"role":"user","content":[{"type":"text","text":"continue"}]}}"#,
         ] {
             writeln!(transcript, "{line}").unwrap();
         }
@@ -270,15 +270,15 @@ mod tests {
         let sessions = sessions_in(root.path());
         assert_eq!(sessions.len(), 1);
         let session = &sessions[0];
-        assert_eq!(session.title, "分析一下磁盘");
+        assert_eq!(session.title, "analyze the disk");
         assert_eq!(session.turns, 2);
         assert_eq!(session.model.as_deref(), Some("claude-sonnet-5-5"));
 
         let conversation = load(session).unwrap();
         assert_eq!(conversation.messages.len(), 3);
         assert_eq!(conversation.messages[0].role, Role::User);
-        assert_eq!(conversation.messages[0].text, "分析一下磁盘");
+        assert_eq!(conversation.messages[0].text, "analyze the disk");
         assert_eq!(conversation.messages[1].role, Role::Assistant);
-        assert_eq!(conversation.messages[2].text, "继续");
+        assert_eq!(conversation.messages[2].text, "continue");
     }
 }

@@ -795,9 +795,11 @@ pub enum AiDisplayLevel {
 #[serde(rename_all = "kebab-case")]
 pub enum AiProtocol {
     /// OpenAI Chat Completions.
+    #[serde(rename = "openai-chat")]
     OpenAiChat,
     /// OpenAI Responses.
     #[default]
+    #[serde(rename = "openai-response")]
     OpenAiResponse,
     /// Anthropic Messages.
     AnthropicMessages,

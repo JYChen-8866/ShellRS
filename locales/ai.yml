@@ -36,6 +36,30 @@ ai.claude.disconnected:
 ai.claude.error:
   zh-CN: "Claude 错误：%{error}"
   en: "Claude error: %{error}"
+ai.claude.spawn_failed:
+  zh-CN: "无法启动本地 Claude CLI：%{error}"
+  en: "Couldn't start the local Claude CLI: %{error}"
+ai.claude.connect_failed:
+  zh-CN: "无法连接本地 Claude CLI：%{error}"
+  en: "Couldn't connect to the local Claude CLI: %{error}"
+ai.claude.permission_channel_failed:
+  zh-CN: "Claude 权限通道启动失败：%{error}"
+  en: "Couldn't start Claude's permission channel: %{error}"
+ai.claude.panel_closed:
+  zh-CN: AI 面板已关闭
+  en: The AI panel closed
+ai.claude.write_failed:
+  zh-CN: "无法写入 Claude：%{error}"
+  en: "Couldn't write to Claude: %{error}"
+ai.claude.stop_failed:
+  zh-CN: "无法停止 Claude：%{error}"
+  en: "Couldn't stop Claude: %{error}"
+ai.claude.connection_lost:
+  zh-CN: "Claude 连接中断：%{error}"
+  en: "Claude's connection was interrupted: %{error}"
+ai.claude.permission_reply_failed:
+  zh-CN: "无法回答 Claude 权限请求：%{error}"
+  en: "Couldn't answer Claude's permission request: %{error}"
 ai.tool.title.command:
   zh-CN: 运行命令
   en: Bash

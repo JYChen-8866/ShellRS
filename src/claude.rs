@@ -16,6 +16,7 @@ use claude_codes::{
 };
 use uuid::Uuid;
 
+use crate::i18n::t;
 use crate::settings::AiConfirmationStrategy;
 
 /// One prompt, including the images Claude must see as images rather than
@@ -262,24 +263,23 @@ async fn run(
     }
     let mut command = builder
         .build_command()
-        .map_err(|error| format!("无法启动本地 Claude CLI：{error}"))?;
+        .map_err(|error| t!("ai.claude.spawn_failed", error = error).to_string())?;
     command.arg("--include-partial-messages");
     command.env("PATH", claude_process_path());
     let child = command
         .spawn()
-        .map_err(|error| format!("无法启动本地 Claude CLI：{error}"))?;
-    let mut client =
-        AsyncClient::new(child).map_err(|error| format!("无法连接本地 Claude CLI：{error}"))?;
+        .map_err(|error| t!("ai.claude.spawn_failed", error = error).to_string())?;
+    let mut client = AsyncClient::new(child)
+        .map_err(|error| t!("ai.claude.connect_failed", error = error).to_string())?;
     if background && !bypass_permissions {
-        client
-            .enable_tool_approval()
-            .await
-            .map_err(|error| format!("Claude 权限通道启动失败：{error}"))?;
+        client.enable_tool_approval().await.map_err(|error| {
+            t!("ai.claude.permission_channel_failed", error = error).to_string()
+        })?;
     }
     events
         .send(ClaudeEvent::Ready)
         .await
-        .map_err(|_| "AI 面板已关闭".to_string())?;
+        .map_err(|_| t!("ai.claude.panel_closed").to_string())?;
 
     let mut commands_open = true;
     while let Ok(prompt) = prompts.recv().await {
@@ -300,7 +300,7 @@ async fn run(
         client
             .send(&ClaudeInput::user_message_blocks(blocks, session_id))
             .await
-            .map_err(|error| format!("无法写入 Claude：{error}"))?;
+            .map_err(|error| t!("ai.claude.write_failed", error = error).to_string())?;
         let mut streamed = false;
         let mut thinking_streamed = false;
         loop {
@@ -311,7 +311,9 @@ async fn run(
                             client
                                 .interrupt()
                                 .await
-                                .map_err(|error| format!("无法停止 Claude：{error}"))?;
+                                .map_err(|error| {
+                                    t!("ai.claude.stop_failed", error = error).to_string()
+                                })?;
                             continue;
                         }
                         Err(_) => {
@@ -321,7 +323,9 @@ async fn run(
                     }
                 }
                 output = client.receive() => {
-                    output.map_err(|error| format!("Claude 连接中断：{error}"))?
+                    output.map_err(|error| {
+                        t!("ai.claude.connection_lost", error = error).to_string()
+                    })?
                 }
             };
             match output {
@@ -425,7 +429,9 @@ async fn run(
                         client
                             .send_control_response(response)
                             .await
-                            .map_err(|error| format!("无法回答 Claude 权限请求：{error}"))?;
+                            .map_err(|error| {
+                                t!("ai.claude.permission_reply_failed", error = error).to_string()
+                            })?;
                     }
                 }
                 ClaudeOutput::ControlCancelRequest(request) => {
