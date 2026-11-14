@@ -628,7 +628,7 @@ impl AiAssistantPanel {
             )),
             images: preview_images,
             queue_position,
-            markdown_view: None,
+            markdown_view: Some(Rc::new(RefCell::new(md::render::MarkdownView::new()))),
             thinking_tail: "".into(),
             tools: Vec::new(),
         });
@@ -1361,8 +1361,8 @@ impl AiAssistantPanel {
                         history::Role::Assistant => Author::Assistant,
                     };
                     let text = message.text;
-                    let markdown_view = (author == Author::Assistant)
-                        .then(|| Rc::new(RefCell::new(md::render::MarkdownView::new())));
+                    let markdown_view =
+                        Some(Rc::new(RefCell::new(md::render::MarkdownView::new())));
                     Message {
                         author,
                         text,
@@ -2009,7 +2009,14 @@ fn render_message_row(
                             .px_3()
                             .py_2()
                             .text_sm()
-                            .child(SharedString::from(message.text.clone())),
+                            .child(render_message_markdown(
+                                &message,
+                                ix,
+                                false,
+                                cwd,
+                                markdown_selection,
+                                cx,
+                            )),
                     ),
                 )
                 .when_some(message.queue_position, |row, position| {
@@ -2145,7 +2152,7 @@ fn render_message_row(
                 streaming_tail(&message.text)
             };
             let body =
-                render_assistant_markdown(&message, ix, is_streaming, cwd, markdown_selection, cx);
+                render_message_markdown(&message, ix, is_streaming, cwd, markdown_selection, cx);
             let has_body = !message.text.trim().is_empty();
             v_flex()
                 .id(id)
@@ -2226,7 +2233,7 @@ struct MessageRowContext {
     markdown_selection: md::render::TranscriptSelection,
 }
 
-fn render_assistant_markdown(
+fn render_message_markdown(
     message: &Message,
     ix: usize,
     is_streaming: bool,
