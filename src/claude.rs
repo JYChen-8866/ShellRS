@@ -2,7 +2,11 @@
 //! starts the installed `claude` binary directly; there is no Node, npm
 //! package or ACP adapter to install.
 
-use std::path::{Path, PathBuf};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 
 use async_channel::{Receiver, Sender};
 use claude_codes::{
@@ -77,19 +81,78 @@ pub enum ClaudeCommand {
     Interrupt,
 }
 
-/// The local Claude CLI: `SHELLRS_CLAUDE` overrides the one on PATH.
+/// The local Claude CLI: `SHELLRS_CLAUDE` overrides the automatic lookup.
 pub fn claude_command() -> PathBuf {
-    if let Ok(command) = std::env::var("SHELLRS_CLAUDE")
-        && !command.trim().is_empty()
-    {
-        return PathBuf::from(command);
-    }
-    executable_path("claude").unwrap_or_else(|| PathBuf::from("claude"))
+    static COMMAND: OnceLock<PathBuf> = OnceLock::new();
+    COMMAND
+        .get_or_init(|| {
+            if let Ok(command) = std::env::var("SHELLRS_CLAUDE")
+                && !command.trim().is_empty()
+            {
+                return PathBuf::from(command);
+            }
+            find_in_paths(&claude_search_paths(), "claude")
+                .unwrap_or_else(|| PathBuf::from("claude"))
+        })
+        .clone()
 }
 
-fn executable_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).find_map(|directory| {
+/// PATH for the Claude process itself. GUI apps opened from Finder inherit a
+/// minimal PATH, which breaks both locating Claude and the `env node` shebang
+/// used by npm and Homebrew installations.
+fn claude_process_path() -> OsString {
+    std::env::join_paths(claude_search_paths()).unwrap_or_else(|_| {
+        std::env::var_os("PATH").unwrap_or_else(|| OsString::from("/usr/bin:/bin:/usr/sbin:/sbin"))
+    })
+}
+
+fn claude_search_paths() -> Vec<PathBuf> {
+    let mut paths = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let home = dirs::home_dir();
+
+    if let Some(home) = &home {
+        paths.extend([
+            home.join(".local/bin"),
+            home.join(".npm-global/bin"),
+            home.join(".volta/bin"),
+            home.join(".bun/bin"),
+            home.join(".asdf/shims"),
+            home.join(".local/share/mise/shims"),
+        ]);
+        let nvm = home.join(".nvm/versions/node");
+        if let Ok(entries) = std::fs::read_dir(nvm) {
+            let mut versions = entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path().join("bin"))
+                .collect::<Vec<_>>();
+            versions.sort_by(|left, right| right.cmp(left));
+            paths.extend(versions);
+        }
+    }
+
+    paths.extend([
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/opt/local/bin"),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/bin"),
+        PathBuf::from("/usr/sbin"),
+        PathBuf::from("/sbin"),
+    ]);
+
+    let mut unique = Vec::with_capacity(paths.len());
+    for path in paths {
+        if !unique.contains(&path) {
+            unique.push(path);
+        }
+    }
+    unique
+}
+
+fn find_in_paths(paths: &[PathBuf], name: &str) -> Option<PathBuf> {
+    paths.iter().find_map(|directory| {
         let candidate = directory.join(name);
         if candidate.is_file() {
             return Some(candidate);
@@ -201,6 +264,7 @@ async fn run(
         .build_command()
         .map_err(|error| format!("无法启动本地 Claude CLI：{error}"))?;
     command.arg("--include-partial-messages");
+    command.env("PATH", claude_process_path());
     let child = command
         .spawn()
         .map_err(|error| format!("无法启动本地 Claude CLI：{error}"))?;
@@ -523,6 +587,17 @@ mod tests {
             permission_policy(true, AiConfirmationStrategy::AutoApprove),
             (PermissionMode::BypassPermissions, false, true)
         );
+    }
+
+    #[test]
+    fn command_lookup_searches_augmented_gui_paths() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let command = second.path().join("claude");
+        std::fs::write(&command, b"fake").unwrap();
+
+        let paths = vec![first.path().to_path_buf(), second.path().to_path_buf()];
+        assert_eq!(find_in_paths(&paths, "claude"), Some(command));
     }
 
     #[test]
