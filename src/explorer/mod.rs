@@ -10,7 +10,6 @@ mod file_pane;
 mod find;
 mod find_window;
 mod history;
-mod image_preview;
 mod marquee;
 mod model;
 mod open_directory_dialog;

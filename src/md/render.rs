@@ -59,6 +59,9 @@ pub type LinkHandler = Rc<dyn Fn(&str, &mut Window, &mut gpui::App)>;
 /// Resolve Markdown image URLs against the surface that owns the document.
 pub type ImageResolver = Rc<dyn Fn(&str) -> gpui::ImageSource>;
 
+/// Open a Markdown image when the reader clicks it.
+pub type ImageClickHandler = Rc<dyn Fn(&str, &str, &mut Window, &mut gpui::App)>;
+
 // ── Layout metrics ─────────────────────────────────────────────────────────
 //
 // Everything in this block participates in measurement, so these are the only
@@ -580,6 +583,7 @@ pub struct Ctx<'a> {
     search: Option<SearchHighlights>,
     link_handler: Option<LinkHandler>,
     image_resolver: Option<ImageResolver>,
+    image_click_handler: Option<ImageClickHandler>,
     /// Cross-frame flatten cache, when this render has one to consult.
     cache: Option<&'a MarkdownView>,
     next_ordinal: Cell<usize>,
@@ -606,6 +610,7 @@ impl<'a> Ctx<'a> {
             search: None,
             link_handler: None,
             image_resolver: None,
+            image_click_handler: None,
             cache: None,
             next_ordinal: Cell::new(0),
             starts_block: Cell::new(true),
@@ -638,6 +643,11 @@ impl<'a> Ctx<'a> {
         self
     }
 
+    pub fn with_image_click_handler(mut self, handler: ImageClickHandler) -> Self {
+        self.image_click_handler = Some(handler);
+        self
+    }
+
     pub fn with_search_highlights(mut self, highlights: SearchHighlights) -> Self {
         self.search = Some(highlights);
         self
@@ -659,6 +669,7 @@ impl<'a> Ctx<'a> {
             search: self.search.clone(),
             link_handler: self.link_handler.clone(),
             image_resolver: self.image_resolver.clone(),
+            image_click_handler: self.image_click_handler.clone(),
             cache: Some(view),
             next_ordinal: Cell::new(self.next_ordinal.get()),
             starts_block: Cell::new(self.starts_block.get()),
@@ -1507,6 +1518,13 @@ fn render_image(url: &str, alt: &str, ctx: &Ctx) -> AnyElement {
             Some(decoded) => img(decoded).id(id),
             None => img(url.to_owned()).id(id),
         },
+    };
+    let image = if let Some(handler) = ctx.image_click_handler.clone() {
+        let url = url.to_string();
+        let alt = alt.to_string();
+        image.on_click(move |_, window, cx| handler(&url, &alt, window, cx))
+    } else {
+        image
     };
     div()
         .w_full()

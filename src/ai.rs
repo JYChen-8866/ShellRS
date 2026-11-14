@@ -25,10 +25,9 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
     list::{List, ListDelegate, ListItem, ListState},
-    menu::{DropdownMenu as _, PopupMenuItem},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     message_scroller::{MessageScroller, MessageScrollerState},
     notification::Notification,
-    progress::ProgressCircle,
     questionnaire::{
         Questionnaire, QuestionnaireActions, QuestionnaireChoice, QuestionnaireChoiceDefinition,
         QuestionnaireChoiceDescription, QuestionnaireChoices, QuestionnaireDescription,
@@ -47,13 +46,14 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::CatalogIcon;
+use crate::app::{CatalogIcon, CopyAiImage};
 use crate::claude::{self, ClaudeEvent};
 use crate::i18n::t;
 use crate::md;
 use crate::settings::{
     AiAssistantSettings, AiConfirmationStrategy, AiExecutionMode, Choice as _, SettingsStore,
 };
+use crate::shared::open_image_preview;
 use crate::terminal::TerminalFont;
 use claude_codes::{ClaudeModel, MediaType};
 
@@ -1425,13 +1425,13 @@ impl AiAssistantPanel {
         let bounds_cell = self.skill_menu_bounds.clone();
         let cwd = self.current_cwd(cx);
         let paste_panel = cx.entity();
-        let context_meter = self.context_usage.map(|usage| context_meter(usage, cx));
+        let context_meter = context_meter(self.context_usage, cx);
 
         let toolbar = h_flex()
-            .w_full()
-            .px_3()
-            .pb_2()
-            .pt_1()
+            .absolute()
+            .left_3()
+            .right_3()
+            .bottom_2()
             .items_center()
             .gap_1()
             .child(
@@ -1471,66 +1471,60 @@ impl AiAssistantPanel {
                     .items_center()
                     .gap_1()
                     .when(show_stop, |controls| {
-                        controls.child(
-                            Button::new("ai-stop")
-                                .secondary()
-                                .small()
-                                .rounded(cx.theme().radius)
-                                .icon(Icon::new(IconName::Square).text_color(cx.theme().danger))
-                                .tooltip(t!("ai.composer.stop"))
-                                .disabled(stopping)
-                                .loading(stopping)
-                                .on_click(move |_, _, cx| {
-                                    stop.update(cx, |panel, cx| panel.stop_response(cx));
-                                }),
-                        )
+                        let stop_button = Button::new("ai-stop")
+                            .danger()
+                            .small()
+                            .rounded(cx.theme().radius)
+                            .w(rems(1.75))
+                            .h(rems(1.75))
+                            .icon(Icon::new(IconName::Square))
+                            .accessibility_label(t!("ai.composer.stop"))
+                            .disabled(stopping)
+                            .loading(stopping)
+                            .on_click(move |_, _, cx| {
+                                stop.update(cx, |panel, cx| panel.stop_response(cx));
+                            });
+                        controls.child(context_progress_action(
+                            "ai-context-progress",
+                            stop_button,
+                            &context_meter,
+                            cx,
+                        ))
                     })
                     .when(!show_stop, |controls| {
-                        if let Some(meter) = context_meter {
-                            let send_button = Button::new("ai-send")
-                                .primary()
-                                .small()
-                                .rounded_full()
-                                .icon(IconName::ArrowUp)
-                                .tooltip(meter.tooltip)
-                                .disabled(empty)
-                                .on_click(move |_, window, cx| {
-                                    send.update(cx, |panel, cx| panel.send(window, cx));
-                                });
-                            controls.child(
-                                ProgressCircle::new("ai-context-progress")
-                                    .with_size(px(56.0))
-                                    .value(meter.remaining_percent)
-                                    .color(meter.color)
-                                    .accessibility_label(meter.label)
-                                    .child(send_button),
-                            )
-                        } else {
-                            controls.child(
-                                Button::new("ai-send")
-                                    .primary()
-                                    .small()
-                                    .rounded_full()
-                                    .icon(IconName::ArrowUp)
-                                    .tooltip(t!("ai.composer.send"))
-                                    .disabled(empty)
-                                    .on_click(move |_, window, cx| {
-                                        send.update(cx, |panel, cx| panel.send(window, cx));
-                                    }),
-                            )
-                        }
+                        let send_button = Button::new("ai-send")
+                            .small()
+                            .rounded(cx.theme().radius)
+                            .w(rems(1.75))
+                            .h(rems(1.75))
+                            .icon(IconName::ArrowUp)
+                            .accessibility_label(t!("ai.composer.send"))
+                            .disabled(empty)
+                            .when(empty, |button| button.secondary())
+                            .when(!empty, |button| button.primary())
+                            .on_click(move |_, window, cx| {
+                                send.update(cx, |panel, cx| panel.send(window, cx));
+                            });
+                        controls.child(context_progress_action(
+                            "ai-context-progress",
+                            send_button,
+                            &context_meter,
+                            cx,
+                        ))
                     }),
             );
 
         let composer = v_flex()
+            .id("ai-composer")
+            .test_support()
             .relative()
             .w_full()
-            .rounded(cx.theme().radius_lg)
+            .rounded(cx.theme().radius)
             .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().popover)
+            .border_color(cx.theme().input)
+            .bg(cx.theme().input_background())
             .shadow_sm()
-            .overflow_hidden()
+            .when(focused, |this| this.focus_ring_style(window, cx))
             .child(
                 canvas(
                     move |bounds, _, _| bounds_cell.set(Some(bounds)),
@@ -1555,20 +1549,16 @@ impl AiAssistantPanel {
             })
             .child(
                 div()
-                    .id("ai-composer")
-                    .test_support()
                     .w_full()
                     .px_3()
                     .pt_2()
+                    // Keep the last lines clear of the controls that float
+                    // at the bottom of the same input frame.
+                    .pb(rems(3.5))
                     .child(
                         div()
                             .relative()
                             .w_full()
-                            .rounded(cx.theme().radius)
-                            .border_1()
-                            .border_color(cx.theme().input)
-                            .bg(cx.theme().input_background())
-                            .when(focused, |this| this.focus_ring_style(window, cx))
                             .when(show_placeholder, |this| {
                                 this.child(
                                     div()
@@ -1900,17 +1890,42 @@ fn render_message_row(
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_else(|| path.display().to_string());
-                    img(markdown_image_source(&path.to_string_lossy(), cwd))
+                    let preview_path = path.clone();
+                    let preview_name = name.clone();
+                    let preview_cwd = cwd.clone();
+                    let copy_path = local_image_path(&path.to_string_lossy(), cwd)
+                        .unwrap_or_else(|| path.clone());
+                    div()
                         .id(ElementId::Name(
                             format!("ai-message-{ix}-image-{image_ix}").into(),
                         ))
-                        .object_fit(ObjectFit::Contain)
-                        .max_w(rems(18.))
-                        .max_h(rems(12.))
-                        .rounded(cx.theme().radius)
+                        .test_support()
+                        .on_click(move |_, window, cx| {
+                            open_ai_image_preview(
+                                &preview_path.to_string_lossy(),
+                                &preview_name,
+                                &preview_cwd,
+                                window,
+                                cx,
+                            )
+                        })
                         .tooltip(move |window, cx| {
                             Tooltip::new(SharedString::from(name.clone())).build(window, cx)
                         })
+                        .context_menu(move |menu, _, _| {
+                            menu.menu_with_icon(
+                                t!("ai.image.copy"),
+                                Icon::new(CatalogIcon::ClipboardCopy),
+                                Box::new(CopyAiImage(copy_path.clone())),
+                            )
+                        })
+                        .child(
+                            img(markdown_image_source(&path.to_string_lossy(), cwd))
+                                .object_fit(ObjectFit::Contain)
+                                .max_w(rems(18.))
+                                .max_h(rems(12.))
+                                .rounded(cx.theme().radius),
+                        )
                 }))
                 .child(
                     h_flex().w_full().justify_end().child(
@@ -2077,6 +2092,7 @@ fn render_message_row(
             };
             let body =
                 render_assistant_markdown(&message, ix, is_streaming, cwd, markdown_selection, cx);
+            let has_body = !message.text.trim().is_empty();
             v_flex()
                 .id(id)
                 .w_full()
@@ -2107,7 +2123,7 @@ fn render_message_row(
                             }),
                     )
                 })
-                .child(body)
+                .when(has_body, |message| message.child(body))
                 .child(
                     h_flex()
                         .invisible()
@@ -2176,6 +2192,7 @@ fn render_assistant_markdown(
         block_gap: (text_size * 0.72).round(),
     };
     let image_cwd = message_cwd.to_path_buf();
+    let resolver_cwd = image_cwd.clone();
     let body_family = cx.theme().font_family.clone();
     let mono_family = font.family(cx);
     let ctx = md::render::Ctx::new(
@@ -2185,7 +2202,12 @@ fn render_assistant_markdown(
         selection.clone(),
     )
     .with_fonts(body_family, mono_family)
-    .with_image_resolver(Rc::new(move |url| markdown_image_source(url, &image_cwd)))
+    .with_image_resolver(Rc::new(move |url| {
+        markdown_image_source(url, &resolver_cwd)
+    }))
+    .with_image_click_handler(Rc::new(move |url, alt, window, cx| {
+        open_ai_image_preview(url, alt, &image_cwd, window, cx)
+    }))
     .with_streaming_animation(is_streaming && !cx.reduce_motion());
 
     let Some(view) = message.markdown_view.as_ref() else {
@@ -3161,6 +3183,7 @@ impl Render for AiAssistantPanel {
                                                 )
                                             },
                                         )
+                                        .with_row_style(StyleRefinement::default().pb(rems(0.75)))
                                         .with_jump_button_label(t!("ai.jump_to_latest")),
                                     ),
                             );
@@ -3186,14 +3209,24 @@ impl Render for AiAssistantPanel {
     }
 }
 
+#[derive(Clone)]
 struct ContextMeter {
-    remaining_percent: f32,
+    progress_percent: f32,
     color: Hsla,
     label: SharedString,
     tooltip: SharedString,
 }
 
-fn context_meter(usage: claude::ClaudeContextUsage, cx: &App) -> ContextMeter {
+fn context_meter(usage: Option<claude::ClaudeContextUsage>, cx: &App) -> ContextMeter {
+    let Some(usage) = usage else {
+        let label = t!("ai.composer.context_usage_pending");
+        return ContextMeter {
+            progress_percent: 0.0,
+            color: cx.theme().muted_foreground,
+            label: label.clone(),
+            tooltip: label,
+        };
+    };
     let used = usage.used_tokens.min(usage.max_tokens);
     let remaining = usage.max_tokens.saturating_sub(used);
     let remaining_percent = if usage.max_tokens == 0 {
@@ -3207,7 +3240,7 @@ fn context_meter(usage: claude::ClaudeContextUsage, cx: &App) -> ContextMeter {
     } else if remaining_percent <= 30.0 {
         cx.theme().warning
     } else {
-        cx.theme().primary_foreground
+        cx.theme().primary
     };
     let percent = format!("{remaining_percent:.0}");
     let label = t!("ai.composer.context_usage_label", percent = percent.clone());
@@ -3224,11 +3257,142 @@ fn context_meter(usage: claude::ClaudeContextUsage, cx: &App) -> ContextMeter {
     );
 
     ContextMeter {
-        remaining_percent,
+        progress_percent: 100.0 - remaining_percent,
         color,
         label,
         tooltip,
     }
+}
+
+fn context_progress_action(
+    id: &'static str,
+    button: impl IntoElement + 'static,
+    meter: &ContextMeter,
+    cx: &App,
+) -> AnyElement {
+    let progress = meter.progress_percent.clamp(0.0, 100.0);
+    let color = meter.color;
+    let track = cx.theme().border;
+    let label = meter.label.clone();
+    let tooltip = meter.tooltip.clone();
+    let size = rems(2.25);
+    let radius = cx.theme().radius;
+    div()
+        .id(id)
+        .test_support()
+        .aria_label(label.clone())
+        .relative()
+        .w(size)
+        .h(size)
+        .flex()
+        .items_center()
+        .justify_center()
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .child(button)
+        .child(
+            canvas(
+                |_, _, _| (),
+                move |bounds, _, window, _| {
+                    window.paint_path(rounded_rect_progress_path(bounds, radius, 1.0), track);
+                    if progress > 0.0 {
+                        window.paint_path(
+                            rounded_rect_progress_path(bounds, radius, progress / 100.0),
+                            color,
+                        );
+                    }
+                },
+            )
+            .absolute()
+            .inset_0(),
+        )
+        .into_any_element()
+}
+
+fn rounded_rect_progress_path(
+    bounds: Bounds<Pixels>,
+    radius: Pixels,
+    progress: f32,
+) -> gpui_kit::Path<Pixels> {
+    const SAMPLES: usize = 192;
+    let stroke = px(2.0);
+    let left = bounds.left() + stroke / 2.0;
+    let top = bounds.top() + stroke / 2.0;
+    let right = bounds.right() - stroke / 2.0;
+    let bottom = bounds.bottom() - stroke / 2.0;
+    let width = (right - left).max(px(0.0));
+    let height = (bottom - top).max(px(0.0));
+    let radius = radius.min(width.min(height) / 2.0).max(px(0.0));
+    let horizontal = (width - radius * 2.0).max(px(0.0));
+    let vertical = (height - radius * 2.0).max(px(0.0));
+    let arc = radius * std::f32::consts::FRAC_PI_2;
+    let lengths = [
+        horizontal, arc, vertical, arc, horizontal, arc, vertical, arc,
+    ];
+    let total = lengths
+        .iter()
+        .copied()
+        .fold(px(0.0), |total, length| total + length);
+    let target = total * progress.clamp(0.0, 1.0);
+    let point_at = |distance: Pixels| {
+        let mut remaining = distance;
+        for (index, length) in lengths.iter().copied().enumerate() {
+            if remaining > length && length > px(0.0) {
+                remaining -= length;
+                continue;
+            }
+            let ratio = if length == px(0.0) {
+                0.0
+            } else {
+                (remaining / length).clamp(0.0, 1.0)
+            };
+            return match index {
+                0 => point(left + radius + horizontal * ratio, top),
+                1 => {
+                    let angle = -std::f32::consts::FRAC_PI_2 + std::f32::consts::FRAC_PI_2 * ratio;
+                    point(
+                        right - radius + angle.cos() * radius,
+                        top + radius + angle.sin() * radius,
+                    )
+                }
+                2 => point(right, top + radius + vertical * ratio),
+                3 => {
+                    let angle = std::f32::consts::FRAC_PI_2 * ratio;
+                    point(
+                        right - radius + angle.cos() * radius,
+                        bottom - radius + angle.sin() * radius,
+                    )
+                }
+                4 => point(right - radius - horizontal * ratio, bottom),
+                5 => {
+                    let angle = std::f32::consts::FRAC_PI_2 + std::f32::consts::FRAC_PI_2 * ratio;
+                    point(
+                        left + radius + angle.cos() * radius,
+                        bottom - radius + angle.sin() * radius,
+                    )
+                }
+                6 => point(left, bottom - radius - vertical * ratio),
+                _ => {
+                    let angle = std::f32::consts::PI + std::f32::consts::FRAC_PI_2 * ratio;
+                    point(
+                        left + radius + angle.cos() * radius,
+                        top + radius + angle.sin() * radius,
+                    )
+                }
+            };
+        }
+        point(left + radius, top)
+    };
+
+    let mut path = PathBuilder::stroke(stroke);
+    path.move_to(point(left + radius, top));
+    for sample in 1..=SAMPLES {
+        let distance = target * (sample as f32 / SAMPLES as f32);
+        path.line_to(point_at(distance));
+    }
+    if progress >= 0.999 {
+        path.close();
+    }
+    path.build().expect("rounded progress path is valid")
 }
 
 fn format_tokens(tokens: u64) -> String {
@@ -3256,6 +3420,9 @@ fn render_composer_attachment(
     let remove_id = SharedString::from(format!("ai-attachment-remove-{ix}"));
     let remove_panel = panel.clone();
     let tooltip_name = SharedString::from(name.clone());
+    let preview_path = path.to_path_buf();
+    let preview_name = name.clone();
+    let preview_cwd = cwd.to_path_buf();
 
     if claude_media_type(path).is_some() {
         div()
@@ -3271,8 +3438,19 @@ fn render_composer_attachment(
             .tooltip(move |window, cx| Tooltip::new(tooltip_name.clone()).build(window, cx))
             .child(
                 img(markdown_image_source(&path.to_string_lossy(), cwd))
+                    .id(SharedString::from(format!("ai-attachment-image-{ix}")))
                     .size_full()
-                    .object_fit(ObjectFit::Cover),
+                    .object_fit(ObjectFit::Cover)
+                    .on_click(move |_, window, cx| {
+                        open_ai_image_preview(
+                            &preview_path.to_string_lossy(),
+                            &preview_name,
+                            &preview_cwd,
+                            window,
+                            cx,
+                        )
+                    })
+                    .test_support(),
             )
             .child(
                 div().absolute().top(rems(0.25)).right(rems(0.25)).child(
@@ -3282,8 +3460,17 @@ fn render_composer_attachment(
                         .rounded_full()
                         .icon(IconName::Close)
                         .tooltip(t!("ai.attachments.remove"))
-                        .on_click(move |_, _, cx| {
-                            remove_panel.update(cx, |panel, cx| panel.remove_attachment(ix, cx));
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            // Remove after this click is dispatched: removing the
+                            // thumbnail synchronously lets the same pointer event
+                            // fall through to the image and open its preview.
+                            let remove_panel = remove_panel.clone();
+                            window.defer(cx, move |_, cx| {
+                                remove_panel
+                                    .update(cx, |panel, cx| panel.remove_attachment(ix, cx));
+                            });
                         }),
                 ),
             )
@@ -3467,6 +3654,42 @@ fn read_attachment(path: &PathBuf) -> Result<String, SharedString> {
 
 static MARKDOWN_IMAGES: OnceLock<Mutex<HashMap<String, Arc<Image>>>> = OnceLock::new();
 
+fn open_ai_image_preview(url: &str, alt: &str, cwd: &Path, window: &mut Window, cx: &mut App) {
+    let bytes = local_image_path(url, cwd)
+        .and_then(|path| std::fs::metadata(path).ok())
+        .map(|metadata| metadata.len());
+    let Some(image) = decode_data_image(url).or_else(|| read_local_image(url, cwd)) else {
+        let name = image_preview_name(url, alt, cwd);
+        window.push_notification(
+            Notification::error(t!("ai.image_preview.failed", name = name)),
+            cx,
+        );
+        return;
+    };
+    let name = image_preview_name(url, alt, cwd);
+    open_image_preview(image, name, bytes, window, cx);
+}
+
+fn image_preview_name(url: &str, alt: &str, cwd: &Path) -> SharedString {
+    if !alt.trim().is_empty() {
+        return alt.trim().to_owned().into();
+    }
+    if let Some(path) = local_image_path(url, cwd)
+        && let Some(name) = path.file_name()
+    {
+        return name.to_string_lossy().into_owned().into();
+    }
+    if let Ok(parsed) = url::Url::parse(url)
+        && let Some(name) = parsed
+            .path_segments()
+            .and_then(|mut segments| segments.next_back())
+            .filter(|name| !name.is_empty())
+    {
+        return name.to_owned().into();
+    }
+    t!("ai.image_preview.title")
+}
+
 fn markdown_image_source(url: &str, cwd: &Path) -> ImageSource {
     let url = url.to_string();
     if url.starts_with("http://") || url.starts_with("https://") {
@@ -3506,24 +3729,32 @@ fn decode_data_image(url: &str) -> Option<Image> {
 }
 
 fn read_local_image(url: &str, cwd: &Path) -> Option<Image> {
-    let path = if let Ok(parsed) = url::Url::parse(url) {
+    let path = local_image_path(url, cwd)?;
+    read_ai_image_file(&path)
+}
+
+pub(crate) fn read_ai_image_file(path: &Path) -> Option<Image> {
+    let bytes = std::fs::read(path).ok()?;
+    let format = image_format_for_path(path).or_else(|| sniff_image_format(&bytes))?;
+    Some(Image::from_bytes(format, bytes))
+}
+
+fn local_image_path(url: &str, cwd: &Path) -> Option<PathBuf> {
+    if let Ok(parsed) = url::Url::parse(url) {
         if parsed.scheme() != "file" {
             return None;
         }
-        parsed.to_file_path().ok()?
-    } else if let Some(rest) = url.strip_prefix("~/") {
-        dirs::home_dir()?.join(rest)
+        return parsed.to_file_path().ok();
+    }
+    if let Some(rest) = url.strip_prefix("~/") {
+        return dirs::home_dir().map(|home| home.join(rest));
+    }
+    let path = PathBuf::from(url);
+    Some(if path.is_absolute() {
+        path
     } else {
-        let path = PathBuf::from(url);
-        if path.is_absolute() {
-            path
-        } else {
-            cwd.join(path)
-        }
-    };
-    let bytes = std::fs::read(&path).ok()?;
-    let format = image_format_for_path(&path).or_else(|| sniff_image_format(&bytes))?;
-    Some(Image::from_bytes(format, bytes))
+        cwd.join(path)
+    })
 }
 
 fn image_format_for_path(path: &Path) -> Option<ImageFormat> {

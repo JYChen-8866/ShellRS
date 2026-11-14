@@ -27,9 +27,9 @@ use crate::app::ExplorerDispatch as _;
 use crate::app::{
     CenterTab, ClearTerminal, CloseActiveTab, CloseEditor, CloseExplorer, CloseLocalTerminal,
     CloseSettings, CloseTabs, CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectHost,
-    CopyAgentSkill, CopyHostAddress, CopyHostId, CopyTerminal, DeleteGroup, DeleteHost,
-    DisconnectTerminal, DismissTerminalFind, DuplicateHost, DuplicateTerminal, EditHost,
-    ExpandAllGroups, ExplorerAction, ExplorerCommand, ExplorerShortcut, FindInTerminal,
+    CopyAgentSkill, CopyAiImage, CopyHostAddress, CopyHostId, CopyTerminal, DeleteGroup,
+    DeleteHost, DisconnectTerminal, DismissTerminalFind, DuplicateHost, DuplicateTerminal,
+    EditHost, ExpandAllGroups, ExplorerAction, ExplorerCommand, ExplorerShortcut, FindInTerminal,
     FindNextInTerminal, FindPreviousInTerminal, FocusSearch, InstallAgentSkill, InstallCliCommand,
     MaximizeWindow, MoveHostNode, NewChildGroup, NewGroup, NewHost, NewHostInGroup,
     NewLocalTerminal, NewTemporaryConnection, OpenExplorer, OpenSettings, PasteTerminal,
@@ -2088,6 +2088,20 @@ impl Workspace {
         );
     }
 
+    fn on_copy_ai_image(
+        &mut self,
+        action: &CopyAiImage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(image) = crate::ai::read_ai_image_file(&action.0) else {
+            window.push_notification(Notification::error(t!("ai.image.copy_failed")), cx);
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_image(&image));
+        window.push_notification(Notification::success(t!("ai.image.copied")), cx);
+    }
+
     fn on_copy_host_id(
         &mut self,
         action: &CopyHostId,
@@ -3118,6 +3132,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_close_tabs))
             .on_action(cx.listener(Self::on_rename_terminal))
             .on_action(cx.listener(Self::on_rename_explorer))
+            .on_action(cx.listener(Self::on_copy_ai_image))
             .on_action(cx.listener(Self::on_copy_host_address))
             .on_action(cx.listener(Self::on_copy_host_id))
             .on_action(cx.listener(Self::on_restart_local_terminal))

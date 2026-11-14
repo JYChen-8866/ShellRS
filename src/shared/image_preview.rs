@@ -17,7 +17,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::format_size;
+use super::format_bytes;
 use crate::app::{
     ActualSizePreview, CatalogIcon, FitPreview, IMAGE_PREVIEW_CONTEXT, ZoomPreviewIn,
     ZoomPreviewOut,
@@ -98,13 +98,13 @@ pub(super) fn percent(scale: f32) -> String {
     format!("{}%", (scale * 100.).round())
 }
 
-pub(super) struct ImagePreview {
+pub(crate) struct ImagePreview {
     /// The decoded image: `None` while it is decoded, an error when it
     /// cannot be.
     decoded: Option<Result<Arc<RenderImage>, String>>,
     name: SharedString,
-    /// The file's size in bytes.
-    bytes: u64,
+    /// The image's size in bytes, when the source has one.
+    bytes: Option<u64>,
     zoom: Zoom,
     scroll: ScrollHandle,
     /// The frame's size as last laid out: the fit, the centering and the
@@ -118,10 +118,10 @@ impl ImagePreview {
     /// The image is decoded on the background executor, here rather than
     /// by `img`'s loading, so that one that cannot be decoded says so
     /// instead of loading for ever.
-    pub(super) fn new(
+    pub(crate) fn new(
         image: Image,
         name: SharedString,
-        bytes: u64,
+        bytes: Option<u64>,
         cx: &mut Context<Self>,
     ) -> Self {
         let renderer = cx.svg_renderer();
@@ -156,7 +156,7 @@ impl ImagePreview {
         }
     }
 
-    pub(super) fn focus_handle(&self) -> &FocusHandle {
+    pub(crate) fn focus_handle(&self) -> &FocusHandle {
         &self.focus_handle
     }
 
@@ -234,14 +234,20 @@ impl Render for ImagePreview {
             .get()
             .unwrap_or_else(|| size(viewport.width * 0.8 - px(48.), height));
         let scale = pixels.map(|image| self.scale(frame, image));
-        let info: SharedString = match pixels {
-            Some(image) => t!(
-                "explorer.preview.image_info",
+        let info: SharedString = match (pixels, self.bytes) {
+            (Some(image), Some(size)) => t!(
+                "shared.image_preview.image_info",
                 width = f32::from(image.width) as u32,
                 height = f32::from(image.height) as u32,
-                size = format_size(self.bytes)
+                size = format_bytes(size)
             ),
-            None => format_size(self.bytes).into(),
+            (Some(image), None) => t!(
+                "shared.image_preview.dimensions",
+                width = f32::from(image.width) as u32,
+                height = f32::from(image.height) as u32
+            ),
+            (None, Some(size)) => format_bytes(size).into(),
+            (None, None) => SharedString::default(),
         };
         // Only the scale: whether it fits is the 适合窗口 button's state.
         let zoom_label: SharedString = scale.map(percent).unwrap_or_default().into();
@@ -273,9 +279,9 @@ impl Render for ImagePreview {
                     .ghost()
                     .small()
                     .icon(Icon::new(CatalogIcon::ZoomOut))
-                    .accessibility_label(t!("explorer.preview.zoom_out"))
+                    .accessibility_label(t!("shared.image_preview.zoom_out"))
                     .tooltip_with_action(
-                        t!("explorer.preview.zoom_out"),
+                        t!("shared.image_preview.zoom_out"),
                         &ZoomPreviewOut,
                         Some(IMAGE_PREVIEW_CONTEXT),
                     )
@@ -297,9 +303,9 @@ impl Render for ImagePreview {
                     .ghost()
                     .small()
                     .icon(Icon::new(CatalogIcon::ZoomIn))
-                    .accessibility_label(t!("explorer.preview.zoom_in"))
+                    .accessibility_label(t!("shared.image_preview.zoom_in"))
                     .tooltip_with_action(
-                        t!("explorer.preview.zoom_in"),
+                        t!("shared.image_preview.zoom_in"),
                         &ZoomPreviewIn,
                         Some(IMAGE_PREVIEW_CONTEXT),
                     )
@@ -309,10 +315,10 @@ impl Render for ImagePreview {
                 Button::new("preview-fit")
                     .ghost()
                     .small()
-                    .label(t!("explorer.preview.fit"))
+                    .label(t!("shared.image_preview.fit"))
                     .selected(self.zoom == Zoom::Fit)
                     .tooltip_with_action(
-                        t!("explorer.preview.fit"),
+                        t!("shared.image_preview.fit"),
                         &FitPreview,
                         Some(IMAGE_PREVIEW_CONTEXT),
                     )
@@ -322,10 +328,10 @@ impl Render for ImagePreview {
                 Button::new("preview-actual-size")
                     .ghost()
                     .small()
-                    .label(t!("explorer.preview.actual_size"))
+                    .label(t!("shared.image_preview.actual_size"))
                     .selected(self.zoom == Zoom::Scale(1.0))
                     .tooltip_with_action(
-                        t!("explorer.preview.actual_size_tip"),
+                        t!("shared.image_preview.actual_size_tip"),
                         &ActualSizePreview,
                         Some(IMAGE_PREVIEW_CONTEXT),
                     )
@@ -424,8 +430,8 @@ impl Render for ImagePreview {
                     .children(picture)
                     .when(pixels.is_none(), |scroll| {
                         let note = match &self.decoded {
-                            Some(Err(_)) => t!("explorer.preview.undecodable"),
-                            _ => t!("explorer.preview.decoding"),
+                            Some(Err(_)) => t!("shared.image_preview.undecodable"),
+                            _ => t!("shared.image_preview.decoding"),
                         };
                         scroll.child(
                             div()

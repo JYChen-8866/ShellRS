@@ -96,6 +96,7 @@ pub fn database_unavailable(error: &anyhow::Error) -> SharedString {
 /// Initialize GPUI Kit and everything global to the application.
 pub fn init(cx: &mut App) {
     gpui_kit::init(cx);
+    gpui_kit::component::Root::register_plugin(cx, crate::shared::build_image_preview_layer);
     // Before ours: rebuilding the keymap starts from gpui-kit's own.
     shortcuts::keep_kit_bindings(cx);
     deepen_list_hover(cx);

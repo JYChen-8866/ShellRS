@@ -545,31 +545,6 @@ explorer.file.download:
   zh-CN: 下载…
   en: Download…
 
-explorer.preview.image_info:
-  zh-CN: "%{width} × %{height} 像素 · %{size}"
-  en: "%{width} × %{height} pixels · %{size}"
-explorer.preview.zoom_out:
-  zh-CN: 缩小
-  en: Zoom out
-explorer.preview.zoom_in:
-  zh-CN: 放大
-  en: Zoom in
-explorer.preview.fit:
-  zh-CN: 适合窗口
-  en: Fit to window
-explorer.preview.actual_size:
-  zh-CN: 原图
-  en: Actual size
-explorer.preview.actual_size_tip:
-  zh-CN: 原图（100%）
-  en: Actual size (100%)
-explorer.preview.undecodable:
-  zh-CN: 无法显示这张图片
-  en: Can’t show this image
-explorer.preview.decoding:
-  zh-CN: 正在显示图片…
-  en: Loading image…
-
 explorer.open_directory.title:
   zh-CN: 打开目录
   en: Open folder

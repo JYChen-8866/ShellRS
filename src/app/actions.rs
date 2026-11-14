@@ -310,6 +310,8 @@ id_actions! {
     /// Copy a host's public id to the clipboard, for another tool to
     /// name the machine by.
     CopyHostId(HostId);
+    /// Copy an image sent to the AI assistant to the image clipboard.
+    CopyAiImage(PathBuf);
 
     /// Open a terminal connection for every host in this group's subtree.
     ConnectGroup(GroupId);

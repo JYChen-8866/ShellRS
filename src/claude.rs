@@ -472,7 +472,12 @@ async fn run(
                         if max_tokens > 0 {
                             let _ = events
                                 .send(ClaudeEvent::ContextUsage(ClaudeContextUsage {
-                                    used_tokens: input_tokens + output_tokens,
+                                    used_tokens: context_used_tokens(
+                                        input_tokens,
+                                        output_tokens,
+                                        cache_read_input_tokens,
+                                        cache_creation_input_tokens,
+                                    ),
                                     max_tokens,
                                     input_tokens,
                                     output_tokens,
@@ -512,6 +517,18 @@ fn permission_policy(
         AiConfirmationStrategy::AlwaysAsk => (PermissionMode::Default, true, false),
         AiConfirmationStrategy::AutoApprove => (PermissionMode::BypassPermissions, false, true),
     }
+}
+
+fn context_used_tokens(
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_input_tokens: u64,
+    cache_creation_input_tokens: u64,
+) -> u64 {
+    input_tokens
+        .saturating_add(output_tokens)
+        .saturating_add(cache_read_input_tokens)
+        .saturating_add(cache_creation_input_tokens)
 }
 
 /// Resolve a user-entered working directory, falling back to where ShellRS
@@ -587,6 +604,11 @@ mod tests {
             permission_policy(true, AiConfirmationStrategy::AutoApprove),
             (PermissionMode::BypassPermissions, false, true)
         );
+    }
+
+    #[test]
+    fn context_usage_includes_cached_input_tokens() {
+        assert_eq!(context_used_tokens(1_200, 300, 8_000, 500), 10_000);
     }
 
     #[test]

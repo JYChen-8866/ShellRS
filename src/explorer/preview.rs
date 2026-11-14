@@ -9,9 +9,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::format_size;
-use super::image_preview::ImagePreview;
 use crate::app::{ExplorerAction, ExplorerDispatch as _};
 use crate::i18n::t;
+use crate::shared::ImagePreview;
 
 /// The largest image a preview reads.
 pub const IMAGE_LIMIT: u64 = 20 * 1024 * 1024;
@@ -82,7 +82,7 @@ pub(super) fn open_preview_dialog(preview: Preview, window: &mut Window, cx: &mu
     let name: SharedString = name.into();
     let body = match content {
         PreviewContent::Image(image) => {
-            let view = cx.new(|cx| ImagePreview::new(image, name.clone(), size, cx));
+            let view = cx.new(|cx| ImagePreview::new(image, name.clone(), Some(size), cx));
             PreviewBody::Image(view)
         }
         PreviewContent::Markdown(text) => PreviewBody::Markdown(text),

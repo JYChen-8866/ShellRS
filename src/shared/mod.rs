@@ -6,6 +6,8 @@ mod detail_row;
 mod dialog;
 mod format;
 mod host_mark;
+mod image_lightbox;
+mod image_preview;
 mod latency_label;
 mod metrics;
 mod rename_tab_dialog;
@@ -23,6 +25,8 @@ pub use dialog::{
 };
 pub use format::{format_bytes, format_duration, format_percent};
 pub use host_mark::HostMark;
+pub(crate) use image_lightbox::{build_image_preview_layer, open_image_preview};
+pub(crate) use image_preview::ImagePreview;
 pub use latency_label::LatencyLabel;
 pub use metrics::{Load, amount, card, gauge, load_color, meter, numeric};
 pub use rename_tab_dialog::{RenamableTab, open_rename_tab_dialog};

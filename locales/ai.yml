@@ -126,6 +126,9 @@ ai.composer.send:
 ai.composer.context_usage_label:
   zh-CN: 上下文剩余 %{percent}%
   en: "%{percent}% context remaining"
+ai.composer.context_usage_pending:
+  zh-CN: 上下文进度会在首次回复后按真实用量更新
+  en: Context usage updates from real usage after the first response
 ai.composer.context_usage:
   zh-CN: |-
     上下文剩余：%{remaining} / %{max} tokens（%{percent}%）
@@ -172,6 +175,21 @@ ai.attachments.unreadable:
 ai.attachments.paste_failed:
   zh-CN: "无法保存粘贴的图片：%{error}"
   en: "Couldn't save the pasted image: %{error}"
+ai.image_preview.title:
+  zh-CN: 图片
+  en: Image
+ai.image_preview.failed:
+  zh-CN: "无法预览「%{name}」"
+  en: "Couldn't preview “%{name}”"
+ai.image.copy:
+  zh-CN: 复制图片
+  en: Copy image
+ai.image.copied:
+  zh-CN: 图片已复制
+  en: Image copied
+ai.image.copy_failed:
+  zh-CN: 无法复制图片
+  en: Couldn't copy image
 
 ai.code.copy:
   zh-CN: 复制代码
