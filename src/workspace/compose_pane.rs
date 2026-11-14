@@ -1,0 +1,443 @@
+//! 撰写窗格: commands written and edited below the terminals, then run in
+//! the terminal in front, or in every checked terminal while 命令广播 is
+//! on, which makes it the broadcast's command bar. A panel of the dock's
+//! bottom dock, there while it shows. Every control dispatches to the
+//! workspace, which owns where it sends; ↑ and ↓ go through what it sent,
+//! which the pane keeps.
+
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
+    button::{Button, ButtonVariants as _},
+    dock::{BasePanel, Panel, PanelControl, PanelEvent},
+    h_flex,
+    input::{InputEvent, MoveDown, MoveUp, Position, Textarea, TextareaState},
+    menu::DropdownMenu as _,
+    switch::Switch,
+    tooltip::Tooltip,
+    v_flex,
+};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+
+use super::compose_history::ComposeHistory;
+use crate::app::{
+    CatalogIcon, SendCompose, SendComposeInterrupt, SendComposeSnippet, ToggleBroadcastKeys,
+    ToggleComposePane, ToggleTerminalBroadcast,
+};
+use crate::host::{HostStore, SnippetId};
+use crate::i18n::{UiLocale, t};
+use crate::snippets::category_options;
+
+/// A category's path (none at the top) and the snippets directly in it.
+type SnippetGroup = (Option<SharedString>, Vec<(SnippetId, SharedString)>);
+
+/// Where the pane sends.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum ComposeTarget {
+    /// The terminal in front, by its tab's name.
+    Terminal(SharedString),
+    /// The terminals checked for 命令广播, this many.
+    Broadcast(usize),
+}
+
+pub(super) struct ComposePane {
+    input: Entity<TextareaState>,
+    store: Entity<HostStore>,
+    /// The workspace's: the pane's commands go there.
+    dispatch: FocusHandle,
+    target: ComposeTarget,
+    /// 命令广播's 同步按键.
+    keys: bool,
+    history: ComposeHistory,
+    _subscriptions: Vec<Subscription>,
+}
+
+/// Which way ↑ and ↓ go through the history.
+#[derive(Clone, Copy)]
+enum Step {
+    Back,
+    Forward,
+}
+
+impl ComposePane {
+    pub(super) fn new(
+        store: Entity<HostStore>,
+        dispatch: FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        // Enter sends, Shift+Enter starts a new line.
+        let input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .submit_on_enter(true)
+                .placeholder(t!("workspace.compose.placeholder"))
+        });
+        let subscriptions = vec![
+            // The snippets menu lists what the store has.
+            cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.observe_global_in::<UiLocale>(window, |this, window, cx| {
+                this.input.update(cx, |input, cx| {
+                    input.set_placeholder(t!("workspace.compose.placeholder"), window, cx)
+                });
+            }),
+            // Through the window, which queues it: the handler reads the
+            // text, so it must not run while the pane is being updated. The
+            // text has the focus, inside the workspace. Shift+Enter tells of
+            // the line it has just started.
+            cx.subscribe_in(&input, window, |_, _, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { shift: false, .. } = event {
+                    window.dispatch_action(Box::new(SendCompose), cx);
+                }
+            }),
+        ];
+        Self {
+            input,
+            store,
+            dispatch,
+            target: ComposeTarget::Broadcast(0),
+            keys: false,
+            history: ComposeHistory::default(),
+            _subscriptions: subscriptions,
+        }
+    }
+
+    /// What is written.
+    pub(super) fn text(&self, cx: &App) -> String {
+        self.input.read(cx).value().to_string()
+    }
+
+    /// Keep the history at `path`, with what it already holds, for the
+    /// next launch. Until then it is kept only until quitting.
+    pub(super) fn keep_history(&mut self, path: PathBuf) {
+        self.history = ComposeHistory::load(path);
+    }
+
+    /// `command`, what the pane held, went out: into the history with it,
+    /// and empty the pane.
+    pub(super) fn sent(&mut self, command: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.history.record(command);
+        self.input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+    }
+
+    /// ↑ on the first line and ↓ on the last go through the history, as
+    /// IPython's do: taken on their way to the text, which otherwise moves
+    /// its caret, and still does where the history has nothing further.
+    /// The lines are as written: on any row of a first line that wraps, ↑
+    /// goes back, as in IPython. With text selected the keys are the
+    /// text's.
+    fn on_vertical_move(&mut self, step: Step, window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.input.read(cx);
+        if !input.selected_range().is_empty() {
+            return;
+        }
+        let line = input.cursor_position().line as usize;
+        let at_edge = match step {
+            Step::Back => line == 0,
+            Step::Forward => line == input.value().matches('\n').count(),
+        };
+        if at_edge && self.go_through_history(step, window, cx) {
+            cx.stop_propagation();
+        }
+    }
+
+    /// Show the command `step` goes to, if there is one. Its caret is where
+    /// the same key goes on from: at the end of the first line going back,
+    /// of the last going forward.
+    fn go_through_history(
+        &mut self,
+        step: Step,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let shown = self.text(cx);
+        let command = match step {
+            Step::Back => self.history.back(&shown),
+            Step::Forward => self.history.forward(&shown),
+        };
+        let Some(command) = command else {
+            return false;
+        };
+        let line = match step {
+            Step::Back => 0,
+            Step::Forward => command.matches('\n').count() as u32,
+        };
+        self.input.update(cx, |input, cx| {
+            input.set_value(command, window, cx);
+            // Clamped to the end of the line.
+            input.set_cursor_position(Position::new(line, u32::MAX), window, cx);
+        });
+        true
+    }
+
+    pub(super) fn set_target(&mut self, target: ComposeTarget, keys: bool, cx: &mut Context<Self>) {
+        if self.target != target || self.keys != keys {
+            self.target = target;
+            self.keys = keys;
+            cx.notify();
+        }
+    }
+
+    pub(super) fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.input.update(cx, |input, cx| input.focus(window, cx));
+    }
+
+    fn broadcasting(&self) -> bool {
+        matches!(self.target, ComposeTarget::Broadcast(_))
+    }
+
+    /// The snippets by category, in 命令片段's order: those of no
+    /// category first, then each category by its whole path
+    /// (`Docker / compose`) with the snippets directly in it.
+    fn snippet_groups(&self, cx: &App) -> Vec<SnippetGroup> {
+        let store = self.store.read(cx);
+        let of = |category| {
+            store
+                .snippets_of(category)
+                .iter()
+                .map(|snippet| (snippet.id, snippet.name.clone()))
+                .collect::<Vec<_>>()
+        };
+        std::iter::once((None, of(None)))
+            .chain(
+                category_options(store.snippet_categories(), None)
+                    .into_iter()
+                    .map(|(id, path)| (Some(path), of(Some(id)))),
+            )
+            .filter(|(_, snippets)| !snippets.is_empty())
+            .collect()
+    }
+}
+
+impl EventEmitter<PanelEvent> for ComposePane {}
+
+impl Focusable for ComposePane {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.input.read(cx).focus_handle(cx)
+    }
+}
+
+impl BasePanel for ComposePane {
+    fn panel_name(&self) -> &'static str {
+        "ComposePane"
+    }
+
+    fn closable(&self, _: &App) -> bool {
+        false
+    }
+
+    fn zoomable(&self, _: &App) -> bool {
+        false
+    }
+}
+
+impl ComposePane {
+    /// The pane, and where it sends: with the center split, more than one
+    /// terminal may show.
+    fn render_title(&self, cx: &App) -> impl IntoElement {
+        let target = match &self.target {
+            ComposeTarget::Terminal(name) => name.clone(),
+            ComposeTarget::Broadcast(count) => {
+                t!("workspace.compose.broadcast_target", count = count)
+            }
+        };
+        let title = t!("workspace.compose.title");
+        let muted = cx.theme().muted_foreground;
+        h_flex()
+            .id("compose-pane-title")
+            .test_support()
+            .aria_label(format!("{title} · {target}"))
+            .flex_1()
+            .min_w_0()
+            .gap_1()
+            .child(Icon::new(CatalogIcon::SquarePen).small())
+            .child(div().flex_shrink_0().child(title))
+            .child(div().flex_shrink_0().text_color(muted).child("·"))
+            .child(
+                div()
+                    .id("compose-pane-target")
+                    .test_support()
+                    .aria_label(target.clone())
+                    .min_w_0()
+                    .truncate()
+                    .text_color(muted)
+                    .child(target),
+            )
+    }
+
+    /// What goes with sending: the snippets, Ctrl+C, while broadcasting
+    /// whether keys are shared, and 发送.
+    fn render_controls(&self, cx: &App) -> impl IntoElement {
+        let groups = Rc::new(self.snippet_groups(cx));
+        let no_snippets = groups.is_empty();
+        // Picking a snippet hands the keyboard back to the text.
+        let input_focus = self.input.read(cx).focus_handle(cx);
+        let send = |action: &'static dyn Action, dispatch: &FocusHandle| {
+            let dispatch = dispatch.clone();
+            move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                dispatch.dispatch_action(action, window, cx)
+            }
+        };
+        let keys_dispatch = self.dispatch.clone();
+        let broadcasting = self.broadcasting();
+        h_flex()
+            .flex_shrink_0()
+            .gap_1()
+            .child(
+                Button::new("compose-snippets")
+                    .xsmall()
+                    .ghost()
+                    .icon(Icon::new(CatalogIcon::CodeXml))
+                    .label(t!("workspace.compose.snippets"))
+                    .tooltip(if no_snippets {
+                        t!("workspace.compose.no_snippets")
+                    } else {
+                        t!("workspace.compose.snippets_tooltip")
+                    })
+                    .disabled(no_snippets)
+                    .dropdown_menu(move |mut menu, _, _| {
+                        menu = menu
+                            .action_context(input_focus.clone())
+                            .max_h(px(420.))
+                            .scrollable(true);
+                        for (ix, (category, snippets)) in groups.iter().enumerate() {
+                            if ix > 0 {
+                                menu = menu.separator();
+                            }
+                            if let Some(name) = category {
+                                menu = menu.label(name.clone());
+                            }
+                            for (id, name) in snippets {
+                                menu = menu.menu(name.clone(), Box::new(SendComposeSnippet(*id)));
+                            }
+                        }
+                        menu
+                    }),
+            )
+            .when(broadcasting, |row| {
+                // A switch, like 目录跟随's: the knob shows the state. The
+                // tooltip goes around it, label included: the switch's
+                // own shows over the knob alone.
+                row.child(
+                    div()
+                        .id("broadcast-keys-tip")
+                        .flex_shrink_0()
+                        .tooltip(|window, cx| {
+                            Tooltip::new(t!("workspace.compose.keys_tooltip")).build(window, cx)
+                        })
+                        .child(
+                            Switch::new("broadcast-keys")
+                                .xsmall()
+                                .checked(self.keys)
+                                .label(t!("workspace.compose.keys"))
+                                .on_click(move |_, window, cx| {
+                                    keys_dispatch.dispatch_action(&ToggleBroadcastKeys, window, cx)
+                                }),
+                        ),
+                )
+            })
+            .child(
+                Button::new("compose-interrupt")
+                    .xsmall()
+                    .ghost()
+                    .label("Ctrl+C")
+                    .tooltip(t!("workspace.compose.interrupt"))
+                    .on_click(send(&SendComposeInterrupt, &self.dispatch)),
+            )
+            .child(
+                Button::new("compose-send")
+                    .xsmall()
+                    .primary()
+                    .icon(Icon::new(CatalogIcon::Send))
+                    .label(if broadcasting {
+                        t!("workspace.compose.send_all")
+                    } else {
+                        t!("workspace.compose.send")
+                    })
+                    .tooltip(t!("workspace.compose.send_tooltip"))
+                    .on_click(send(&SendCompose, &self.dispatch)),
+            )
+    }
+
+    /// × closes the pane; while broadcasting it is the broadcast's command
+    /// bar, and × ends the broadcast.
+    fn render_close(&self) -> impl IntoElement {
+        let dispatch = self.dispatch.clone();
+        let (tooltip, action): (_, &'static dyn Action) = if self.broadcasting() {
+            (t!("workspace.broadcast.end"), &ToggleTerminalBroadcast)
+        } else {
+            (t!("workspace.compose.close"), &ToggleComposePane)
+        };
+        Button::new("compose-close")
+            .xsmall()
+            .ghost()
+            .tab_stop(false)
+            .icon(IconName::Close)
+            .tooltip(tooltip)
+            .on_click(move |_, window, cx| dispatch.dispatch_action(action, window, cx))
+    }
+}
+
+/// The dock draws no title bar over the pane (see `WorkspaceTabBar`): its
+/// own has no 「…」 menu, which would hold nothing here.
+impl Panel for ComposePane {
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        t!("workspace.compose.title")
+    }
+
+    fn zoom_control(&self, _: &App) -> Option<PanelControl> {
+        None
+    }
+
+    fn inner_padding(&self, _: &App) -> bool {
+        false
+    }
+}
+
+impl Render for ComposePane {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .id("compose-pane")
+            .test_support()
+            .size_full()
+            .min_h_0()
+            .bg(cx.theme().background)
+            .child(
+                // Laid out as the dock's own title bars are, which it sizes
+                // in pixels: the panes beside it line up.
+                h_flex()
+                    .flex_shrink_0()
+                    .h(px(30.))
+                    .py_2()
+                    .pl_3()
+                    .pr_2()
+                    .gap_2()
+                    .child(self.render_title(cx))
+                    .child(self.render_controls(cx))
+                    .child(self.render_close()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .px_2()
+                    .pb_2()
+                    .capture_action(cx.listener(|this, _: &MoveUp, window, cx| {
+                        this.on_vertical_move(Step::Back, window, cx)
+                    }))
+                    .capture_action(cx.listener(|this, _: &MoveDown, window, cx| {
+                        this.on_vertical_move(Step::Forward, window, cx)
+                    }))
+                    .child(
+                        Textarea::new(&self.input)
+                            .h(relative(1.))
+                            .text_sm()
+                            .aria_label(t!("workspace.compose.title"))
+                            .font_family(cx.theme().mono_font_family.clone()),
+                    ),
+            )
+    }
+}

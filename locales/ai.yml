@@ -1,0 +1,248 @@
+_version: 2
+
+ai.title:
+  zh-CN: AI 助手
+  en: AI assistant
+ai.status.ready:
+  zh-CN: 已就绪
+  en: Ready
+ai.status.disabled:
+  zh-CN: 未启用
+  en: "Off"
+ai.status.unconfigured:
+  zh-CN: 未配置
+  en: Not configured
+ai.claude.connecting:
+  zh-CN: 连接中
+  en: Connecting
+ai.claude.ready:
+  zh-CN: 已连接
+  en: Connected
+ai.claude.stopping:
+  zh-CN: 正在停止…
+  en: Stopping…
+ai.claude.adjusting:
+  zh-CN: 正在调整方向…
+  en: Adjusting direction…
+ai.claude.failed:
+  zh-CN: 连接失败
+  en: Connection failed
+ai.claude.start_failed:
+  zh-CN: 无法启动本地 Claude CLI，请确认已安装并登录 claude。
+  en: Couldn't start the local Claude CLI. Make sure claude is installed and signed in.
+ai.claude.disconnected:
+  zh-CN: ACP 连接已断开，请新建会话后重试。
+  en: The ACP connection closed. Start a new conversation and try again.
+ai.claude.error:
+  zh-CN: "Claude 错误：%{error}"
+  en: "Claude error: %{error}"
+ai.tool.title.command:
+  zh-CN: 运行命令
+  en: Bash
+ai.tool.title.read:
+  zh-CN: 读取
+  en: Read
+ai.tool.title.edit:
+  zh-CN: 编辑
+  en: Edit
+ai.tool.title.search:
+  zh-CN: 搜索
+  en: Search
+ai.tool.title.fetch:
+  zh-CN: 获取网页
+  en: Fetch
+ai.tool.title.generic:
+  zh-CN: 工具调用
+  en: Tool call
+ai.tool.input:
+  zh-CN: 输入
+  en: Input
+ai.tool.output:
+  zh-CN: 输出
+  en: Output
+ai.tool.no_output:
+  zh-CN: 没有输出
+  en: No output
+ai.tool.group.item:
+  zh-CN: "%{kind} × %{count}"
+  en: "%{kind} × %{count}"
+ai.tool.group.ran:
+  zh-CN: "已执行：%{summary}"
+  en: "Ran: %{summary}"
+ai.tool.kind.command:
+  zh-CN: 命令
+  en: Command
+ai.tool.kind.read:
+  zh-CN: 读取
+  en: Read
+ai.tool.kind.edit:
+  zh-CN: 编辑
+  en: Edit
+ai.tool.kind.search:
+  zh-CN: 搜索
+  en: Search
+ai.tool.kind.fetch:
+  zh-CN: 网页
+  en: Fetch
+ai.tool.kind.tool:
+  zh-CN: 工具调用
+  en: Tool
+ai.permission.waiting:
+  zh-CN: 等待批准
+  en: Waiting for approval
+ai.permission.headline:
+  zh-CN: Claude 请求使用“%{tool}”
+  en: Claude wants to use “%{tool}”
+ai.permission.reason:
+  zh-CN: "原因：%{reason}"
+  en: "Reason: %{reason}"
+ai.permission.reject:
+  zh-CN: 拒绝
+  en: Reject
+ai.permission.allow_once:
+  zh-CN: 允许一次
+  en: Allow once
+ai.permission.allow_description:
+  zh-CN: 只执行这一次，不改变后续权限。
+  en: Run this call once without changing later permissions.
+ai.permission.reject_description:
+  zh-CN: 不执行这次操作。
+  en: Do not run this call.
+ai.permission.input_label:
+  zh-CN: 补充说明
+  en: Note
+ai.permission.input_placeholder:
+  zh-CN: 告诉 Claude 下一步怎么做…
+  en: Tell Claude what to do instead…
+ai.composer.placeholder:
+  zh-CN: 让 AI 帮忙做点什么…（Enter 发送，Shift+Enter 换行）
+  en: Ask the AI to do something… (Enter to send, Shift+Enter for a new line)
+ai.composer.attach:
+  zh-CN: 添加文件
+  en: Add file
+ai.composer.send:
+  zh-CN: 发送
+  en: Send
+ai.composer.context_usage_label:
+  zh-CN: 上下文剩余 %{percent}%
+  en: "%{percent}% context remaining"
+ai.composer.context_usage:
+  zh-CN: |-
+    上下文剩余：%{remaining} / %{max} tokens（%{percent}%）
+    已使用：%{used} tokens
+    最近请求：输入 %{input} · 输出 %{output} · 缓存读取 %{cache_read} · 缓存写入 %{cache_write}
+  en: |-
+    Context remaining: %{remaining} / %{max} tokens (%{percent}%)
+    Used: %{used} tokens
+    Last request: input %{input} · output %{output} · cache read %{cache_read} · cache write %{cache_write}
+ai.composer.stop:
+  zh-CN: 停止回复
+  en: Stop response
+ai.header.history:
+  zh-CN: 历史对话
+  en: Conversation history
+ai.header.new_chat:
+  zh-CN: 新建会话
+  en: New conversation
+ai.empty.title:
+  zh-CN: 一起排查当前终端
+  en: Troubleshoot this terminal together
+ai.empty.description:
+  zh-CN: 描述你想做什么，AI 会在当前 SSH 会话中执行命令辅助你。
+  en: Describe what you want to do, and the AI will help by running commands in this SSH session.
+
+ai.model.default:
+  zh-CN: 默认模型
+  en: Default model
+ai.attachments.choose:
+  zh-CN: 添加文件作为上下文
+  en: Add files as context
+ai.attachments.only:
+  zh-CN: 请查看附件。
+  en: Please review the attached files.
+ai.attachments.remove:
+  zh-CN: 移除附件
+  en: Remove attachment
+ai.attachments.too_large:
+  zh-CN: "附件「%{name}」超过 512 KB，未加入上下文。"
+  en: "The attachment “%{name}” is over 512 KB and was not added."
+ai.attachments.unreadable:
+  zh-CN: "无法读取附件「%{name}」：%{error}"
+  en: "Couldn't read attachment “%{name}”: %{error}"
+ai.attachments.paste_failed:
+  zh-CN: "无法保存粘贴的图片：%{error}"
+  en: "Couldn't save the pasted image: %{error}"
+
+ai.code.copy:
+  zh-CN: 复制代码
+  en: Copy code
+ai.code.copied:
+  zh-CN: 已复制代码
+  en: Code copied
+
+ai.message.copy:
+  zh-CN: 复制消息
+  en: Copy message
+ai.message.copied:
+  zh-CN: 已复制消息
+  en: Message copied
+ai.message.queue_position:
+  zh-CN: 队列位置 %{position}
+  en: Queue position %{position}
+ai.message.thinking:
+  zh-CN: 思考中…
+  en: Thinking…
+ai.message.edit:
+  zh-CN: 编辑
+  en: Edit
+ai.message.adjust_direction:
+  zh-CN: 调整方向
+  en: Adjust direction
+ai.message.close:
+  zh-CN: 关闭
+  en: Close
+
+ai.attachments.image_too_large:
+  zh-CN: "图片「%{name}」超过 10 MB，未发送。"
+  en: "The image “%{name}” is over 10 MB and was not sent."
+ai.attachments.image_unsupported:
+  zh-CN: "Claude 只能接收 JPEG、PNG、GIF 或 WebP 图片，未发送「%{name}」。"
+  en: "Claude accepts only JPEG, PNG, GIF, or WebP images; “%{name}” was not sent."
+
+ai.history.title:
+  zh-CN: 历史对话
+  en: Conversation history
+ai.history.description:
+  zh-CN: 查看、切换或删除当前机器的 AI 对话。
+  en: View, switch, or delete this computer's AI conversations.
+ai.history.search:
+  zh-CN: 搜索对话或模型
+  en: Search conversations or models
+ai.history.empty_list:
+  zh-CN: 还没有 AI 历史对话。
+  en: There is no AI conversation history yet.
+ai.history.current:
+  zh-CN: 当前
+  en: Current
+ai.history.turns:
+  zh-CN: "%{count} 条提问"
+  en: "%{count} prompts"
+ai.history.clear:
+  zh-CN: 清空
+  en: Clear
+ai.history.clear_tooltip:
+  zh-CN: 清空历史对话
+  en: Clear conversation history
+ai.history.clear_title:
+  zh-CN: 清空历史对话？
+  en: Clear conversation history?
+ai.history.clear_description:
+  zh-CN: 会删除当前工作目录下 Claude 保存的全部会话记录，其他目录不受影响。此操作无法撤销。
+  en: This deletes every Claude conversation saved for the current working directory. Other folders are unaffected. This cannot be undone.
+ai.history.cleared:
+  zh-CN: 已清空 %{count} 个会话
+  en: Cleared %{count} conversations
+
+ai.jump_to_latest:
+  zh-CN: 跳到最新
+  en: Jump to latest

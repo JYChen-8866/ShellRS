@@ -1,0 +1,116 @@
+name: private-release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, x86_64]
+    timeout-minutes: 120
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install
+      - run: rustup target add "$ARCH-apple-darwin"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: private-macos-${{ matrix.arch }}
+      - name: Build app and DMG
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          export SHELLRS_BUILD_DATE=$(date -u +%Y-%m-%d)
+          export SHELLRS_COMMIT="$GITHUB_SHA"
+          cargo build --release --locked --bin shellrs --target "$ARCH-apple-darwin"
+          mkdir -p dist build
+          lipo "target/$ARCH-apple-darwin/release/shellrs" -verify_arch "${ARCH/aarch64/arm64}"
+          packaging/macos/bundle.sh "target/$ARCH-apple-darwin/release/shellrs" "$version" "$GITHUB_RUN_NUMBER" build
+          codesign --force --deep --sign - build/ShellRS.app
+          codesign --verify --deep --strict --verbose=2 build/ShellRS.app
+          mkdir -p "$RUNNER_TEMP/dmg"
+          cp -R build/ShellRS.app "$RUNNER_TEMP/dmg/"
+          ln -s /Applications "$RUNNER_TEMP/dmg/Applications"
+          dmg="dist/ShellRS-$version-macos-$ARCH.dmg"
+          size=$(( $(du -sm "$RUNNER_TEMP/dmg" | cut -f1) * 2 + 20 ))
+          hdiutil create -volname ShellRS -srcfolder "$RUNNER_TEMP/dmg" -ov \
+            -fs HFS+ -size "${size}m" -format UDZO "$dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/*.dmg
+
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: private-windows
+      - uses: ilammy/setup-nasm@v1
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $env:SHELLRS_BUILD_DATE = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
+          $env:SHELLRS_COMMIT = $env:GITHUB_SHA
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"$').Matches[0].Groups[1].Value
+          cargo build --release --locked --bins
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/windows-runtime.ps1 target/release
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y; }
+          & $iscc "/DAppVersion=$version" "/DBuildDir=$env:GITHUB_WORKSPACE\target\release" `
+            "/O$env:GITHUB_WORKSPACE\dist" packaging\windows\shellrs.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.exe
+
+  release:
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect and notes
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          mkdir -p dist
+          cp artifacts/macos-aarch64/*.dmg artifacts/macos-x86_64/*.dmg artifacts/windows/*.exe dist/
+          awk -v heading="## [$version]" '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' > notes.md
+          cat >> notes.md <<'EOF'
+
+          ---
+
+          Private, unsigned development build. macOS builds are ad-hoc signed but not notarized; Windows setup is unsigned.
+          EOF
+          ls -lh dist
+      - name: Create private release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* --title "ShellRS $version" --notes-file notes.md
+          fi

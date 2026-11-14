@@ -1,0 +1,1840 @@
+use gpui_kit::component::ThemeMode;
+use gpui_kit::{SharedString, WindowAppearance};
+use serde::{Deserialize, Deserializer, Serialize};
+
+pub use crate::sync::SyncLocation;
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use crate::app::{ShortcutOverrides, ToolKind};
+use crate::explorer::{FileIconStyle, FileSizeFormat, ShowHiddenFiles};
+use crate::i18n::t;
+use crate::sftp::{DEFAULT_PARALLEL_TRANSFERS, PARALLEL_TRANSFERS_RANGE};
+use crate::terminal::{
+    DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, HighlightRule, LINE_HEIGHT_RANGE,
+    RightClick, TerminalCursorStyle, TerminalInteraction, TerminalTheme, are_former_examples,
+    default_rules,
+};
+use crate::update::Channel;
+
+/// Everything the settings page changes. Each field falls back to its
+/// default when the file does not mention it, so a file written by an older
+/// version still loads.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppSettings {
+    pub language: InterfaceLanguage,
+    pub appearance: Appearance,
+    /// 外观 → 常规 → 界面字号.
+    pub interface: InterfaceSettings,
+    /// 外观 → 终端主题.
+    pub terminal_theme: TerminalThemeSettings,
+    /// 外观 → 浅色背景图, 深色背景图.
+    pub terminal_background: TerminalBackgroundSettings,
+    pub terminal_font: TerminalFontSettings,
+    /// 终端 → 终端交互.
+    pub terminal_interaction: TerminalInteraction,
+    /// 终端 → 侧栏功能: which tools the right sidebar offers.
+    pub sidebar_tools: SidebarTools,
+    /// The left sidebar's visibility, restored on the next launch.
+    pub sidebar_collapsed: bool,
+    /// How wide the two sidebars were dragged, for the next launch to open
+    /// them so; 应用 → 窗口 → 侧栏宽度 puts them back.
+    pub sidebar_widths: SidebarWidths,
+    /// The right sidebar beside local terminals, switched from its tool
+    /// buttons: the tool it shows, `None` while hidden. One for every local
+    /// terminal, as a host keeps its own for its terminals.
+    #[serde(with = "tool_by_key")]
+    pub local_sidebar_tool: Option<ToolKind>,
+    /// 撰写窗格 below the terminals, switched from its shortcut and the
+    /// terminal's context menu: shown while true. 命令广播 shows it anyway.
+    pub compose_pane: bool,
+    /// 显示主机详情, switched from the button beside the host search: while
+    /// true the host tree shows each host's address and notes under its
+    /// name.
+    pub host_details: bool,
+    /// 终端 → 本地终端.
+    pub local_terminal: LocalTerminalSettings,
+    /// AI 助手.
+    pub ai: AiAssistantSettings,
+    pub external_cli: ExternalCliSettings,
+    /// 同步.
+    pub sync: SyncSettings,
+    pub update: UpdateSettings,
+    /// 关于 → 隐私.
+    pub analytics: AnalyticsSettings,
+    /// The SFTP 大小 column, switched from the column title's menu rather
+    /// than the settings page, as in WinSCP.
+    pub file_size_format: FileSizeFormat,
+    /// 显示隐藏文件 in the SFTP lists, each side on its own, switched from
+    /// their toolbars and menus.
+    pub show_hidden: ShowHiddenFiles,
+    /// SFTP → 传输.
+    pub transfers: TransferSettings,
+    /// SFTP → 图标风格.
+    pub file_icon_style: FileIconStyle,
+    /// SFTP → 文件侧栏.
+    pub file_sidebar: FileSidebarSettings,
+    /// 终端 → 通知.
+    pub notifications: NotificationSettings,
+    /// 关键字高亮.
+    pub terminal_highlight: TerminalHighlightSettings,
+    /// 应用 → 窗口.
+    pub window: WindowSettings,
+    /// 应用 → 应用锁: zero disables locking after inactivity.
+    pub app_lock_idle_minutes: u32,
+    /// Keep the external CLI available behind the password gate, if enabled.
+    pub app_lock_allow_cli: bool,
+    /// 键盘快捷键: what the user changed of them.
+    pub shortcuts: ShortcutOverrides,
+}
+
+/// What 界面字号 offers, in pixels.
+pub const INTERFACE_FONT_SIZE_RANGE: std::ops::RangeInclusive<f32> = 12.0..=20.0;
+/// gpui-kit's own base font, which the interface had before it could change;
+/// on Windows 14, where its body text then is the system's own 9 points.
+pub const DEFAULT_INTERFACE_FONT_SIZE: f32 = if cfg!(windows) { 14.0 } else { 16.0 };
+
+/// 外观 → 常规.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InterfaceSettings {
+    /// 界面字号: the base font in pixels, which the interface's text and
+    /// spacing follow. Terminals have their own.
+    pub font_size: f32,
+}
+
+impl Default for InterfaceSettings {
+    fn default() -> Self {
+        Self {
+            font_size: DEFAULT_INTERFACE_FONT_SIZE,
+        }
+    }
+}
+
+/// The left and right sidebars' widths in pixels as the user dragged
+/// them: `None` for one at its default width, which the workspace knows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SidebarWidths {
+    pub left: Option<f32>,
+    pub right: Option<f32>,
+}
+
+impl SidebarWidths {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Whole pixels; what is not a width gives the default.
+    fn normalized(self) -> Self {
+        let width = |width: Option<f32>| {
+            width
+                .filter(|width| width.is_finite() && *width > 0.)
+                .map(f32::round)
+        };
+        Self {
+            left: width(self.left),
+            right: width(self.right),
+        }
+    }
+}
+
+/// SFTP → 传输.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TransferSettings {
+    /// 最大同时传输数量: how many files of an upload or a download move at
+    /// once; the rest wait their turn.
+    pub parallel: usize,
+}
+
+impl Default for TransferSettings {
+    fn default() -> Self {
+        Self {
+            parallel: DEFAULT_PARALLEL_TRANSFERS,
+        }
+    }
+}
+
+/// SFTP → 文件侧栏: the right sidebar's 文件.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FileSidebarSettings {
+    /// 自动检测目录配置: on showing 文件, see whether the host's shell reports
+    /// its folder and offer to set it up if not; also whether 文件 follows
+    /// the terminal's folder to begin with, on a host whose 目录跟随 the
+    /// user has not switched (`Host::directory_follow`). On unless turned
+    /// off.
+    pub detect_directory_follow: bool,
+}
+
+impl Default for FileSidebarSettings {
+    fn default() -> Self {
+        Self {
+            detect_directory_follow: true,
+        }
+    }
+}
+
+/// 终端 → 侧栏功能: the tools the user offers in the right sidebar or takes
+/// out of it, by `ToolKind::key`; a tool not in it has its default. So a
+/// tool added later comes with its own default, and a key this version does
+/// not know (a newer one's tool) is kept for the version that does. A value
+/// that is not a yes or no is dropped on its own.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct SidebarTools(BTreeMap<String, bool>);
+
+impl<'de> Deserialize<'de> for SidebarTools {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let values = BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?;
+        Ok(Self(
+            values
+                .into_iter()
+                .filter_map(|(key, value)| Some((key, value.as_bool()?)))
+                .collect(),
+        ))
+    }
+}
+
+impl SidebarTools {
+    pub fn shows(&self, tool: ToolKind) -> bool {
+        self.0
+            .get(tool.key())
+            .copied()
+            .unwrap_or(tool.shown_by_default())
+    }
+
+    /// Offer `tool`, or not. Its default is stored as no change.
+    pub fn set(&mut self, tool: ToolKind, shown: bool) {
+        if shown == tool.shown_by_default() {
+            self.0.remove(tool.key());
+        } else {
+            self.0.insert(tool.key().to_owned(), shown);
+        }
+    }
+
+    /// Whether every tool this version knows has its default.
+    pub fn is_default(&self) -> bool {
+        ToolKind::ALL
+            .iter()
+            .all(|tool| self.shows(*tool) == tool.shown_by_default())
+    }
+
+    /// Every tool this version knows back to its default.
+    pub fn reset(&mut self) {
+        for tool in ToolKind::ALL {
+            self.0.remove(tool.key());
+        }
+    }
+}
+
+/// A tool by its `ToolKind::key`. A key this version does not know, or a
+/// value that is not a key, reads as no tool: one stray value must not
+/// cost the rest of the file.
+mod tool_by_key {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::app::ToolKind;
+
+    pub fn serialize<S: Serializer>(
+        tool: &Option<ToolKind>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        tool.map(ToolKind::key).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<ToolKind>, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(value.as_str().and_then(ToolKind::from_key))
+    }
+}
+
+/// 应用 → 窗口: what the next launch restores, and how closing behaves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowSettings {
+    /// 记住窗口大小: its size, and whether it was maximized.
+    pub remember_size: bool,
+    /// 记住窗口位置: where it was, on which screen.
+    pub remember_position: bool,
+    /// Windows only: hide the window in the notification area instead of
+    /// quitting when its close button is clicked. Off until enabled.
+    pub close_to_tray: bool,
+}
+
+impl Default for WindowSettings {
+    fn default() -> Self {
+        Self {
+            remember_size: true,
+            remember_position: true,
+            close_to_tray: false,
+        }
+    }
+}
+
+/// 外观 → 主题: by key, the theme used while the app is light and the one
+/// while it is dark, and whether the app takes its colors or only the
+/// terminals do.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalThemeSettings {
+    pub light: String,
+    pub dark: String,
+    /// 界面跟随主题. Off until the user turns it on: the app keeps
+    /// gpui-kit's own neutral light or dark colors.
+    pub app_follows: bool,
+}
+
+impl Default for TerminalThemeSettings {
+    fn default() -> Self {
+        Self {
+            light: TerminalTheme::default_for(ThemeMode::Light).key().into(),
+            dark: TerminalTheme::default_for(ThemeMode::Dark).key().into(),
+            app_follows: false,
+        }
+    }
+}
+
+impl TerminalThemeSettings {
+    /// The theme the app's colors come from for `mode`: the chosen one, or
+    /// the default, ShellRS Light or Dark, when the app does not follow.
+    pub fn app_theme(&self, mode: ThemeMode) -> &'static TerminalTheme {
+        if self.app_follows {
+            self.theme(mode)
+        } else {
+            TerminalTheme::default_for(mode)
+        }
+    }
+
+    /// Whether both columns have their defaults, the switch aside.
+    pub fn is_default_choice(&self) -> bool {
+        let default = Self::default();
+        self.light == default.light && self.dark == default.dark
+    }
+
+    /// Both columns back to their defaults, the switch left as it is.
+    pub fn reset_choice(&mut self) {
+        let default = Self::default();
+        self.light = default.light;
+        self.dark = default.dark;
+    }
+
+    /// The theme for `mode`. A key this version does not know (from a newer
+    /// one, or a typo), or one of a theme for the other appearance, gives
+    /// way to the default rather than failing the file.
+    pub fn theme(&self, mode: ThemeMode) -> &'static TerminalTheme {
+        let key = match mode {
+            ThemeMode::Light => &self.light,
+            ThemeMode::Dark => &self.dark,
+        };
+        TerminalTheme::find(key)
+            .filter(|theme| theme.mode() == mode)
+            .unwrap_or_else(|| TerminalTheme::default_for(mode))
+    }
+
+    /// Use `theme` for the appearance it is made for.
+    pub fn choose(&mut self, theme: &TerminalTheme) {
+        let key = theme.key().to_string();
+        match theme.mode() {
+            ThemeMode::Light => self.light = key,
+            ThemeMode::Dark => self.dark = key,
+        }
+    }
+}
+
+/// 外观 → 浅色背景图, 深色背景图: the picture behind the terminals' text
+/// while the app is light, and the one while it is dark.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalBackgroundSettings {
+    pub light: BackgroundImageSettings,
+    pub dark: BackgroundImageSettings,
+}
+
+impl TerminalBackgroundSettings {
+    pub fn for_mode(&self, mode: ThemeMode) -> &BackgroundImageSettings {
+        match mode {
+            ThemeMode::Light => &self.light,
+            ThemeMode::Dark => &self.dark,
+        }
+    }
+
+    pub fn for_mode_mut(&mut self, mode: ThemeMode) -> &mut BackgroundImageSettings {
+        match mode {
+            ThemeMode::Light => &mut self.light,
+            ThemeMode::Dark => &mut self.dark,
+        }
+    }
+
+    fn normalized(self) -> Self {
+        Self {
+            light: self.light.normalized(),
+            dark: self.dark.normalized(),
+        }
+    }
+}
+
+/// How much of the picture shows through the terminal's color by default.
+pub const DEFAULT_BACKGROUND_OPACITY: f32 = 0.3;
+
+/// One appearance's background picture.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BackgroundImageSettings {
+    /// 启用: the terminals show the picture. Off until the user turns it on
+    /// or chooses one.
+    pub enabled: bool,
+    /// 图片: ShellRS's copy of the picture the user chose, kept in the data
+    /// directory's `backgrounds`. The file names it by its name there, so a
+    /// portable copy can move; `SettingsStore::settings` gives it in full.
+    pub image: Option<PathBuf>,
+    /// 透明度: how much of the picture shows through the terminal's
+    /// background color laid over it like a veil, from 0 (none) to 1 (all
+    /// of it, no veil).
+    pub opacity: f32,
+}
+
+impl Default for BackgroundImageSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            image: None,
+            opacity: DEFAULT_BACKGROUND_OPACITY,
+        }
+    }
+}
+
+impl BackgroundImageSettings {
+    /// The picture the terminals show, when they show one.
+    pub fn shown(&self) -> Option<&Path> {
+        self.image.as_deref().filter(|_| self.enabled)
+    }
+
+    fn normalized(self) -> Self {
+        Self {
+            enabled: self.enabled,
+            image: self.image.filter(|image| !image.as_os_str().is_empty()),
+            opacity: if self.opacity.is_finite() {
+                self.opacity.clamp(0., 1.)
+            } else {
+                DEFAULT_BACKGROUND_OPACITY
+            },
+        }
+    }
+}
+
+/// 关键字高亮: whether terminals color their text by the rules, and the
+/// rules, in the order they win where they overlap. Off until the user turns
+/// it on. A file without the rules gets the examples a new installation
+/// starts with, ready once it is on; one the user emptied stays empty.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalHighlightSettings {
+    /// 启用关键字高亮. Off, no rule colors anything or notifies.
+    pub enabled: bool,
+    #[serde(deserialize_with = "readable_rules")]
+    pub rules: Vec<HighlightRule>,
+}
+
+impl Default for TerminalHighlightSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rules: default_rules(),
+        }
+    }
+}
+
+/// The rules the file holds that this version can read. One it cannot (a
+/// color from a newer version, a hand-made typo) is dropped on its own:
+/// failing the whole file would put every setting back to its default.
+fn readable_rules<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<HighlightRule>, D::Error> {
+    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(values
+        .into_iter()
+        .filter_map(|value| serde_json::from_value(value).ok())
+        .collect())
+}
+
+/// 终端 → 本地终端.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalTerminalSettings {
+    /// The program new and restarted local terminals run, a path or a
+    /// command with any arguments, as typed. `None` is the system's default
+    /// shell, found anew each time.
+    pub shell: Option<String>,
+    /// 保留终端内容: a 项目 terminal's last lines of output, kept when it
+    /// closes and drawn again when it opens. On until the user turns it off.
+    pub keep_output: bool,
+}
+
+impl Default for LocalTerminalSettings {
+    fn default() -> Self {
+        Self {
+            shell: None,
+            keep_output: true,
+        }
+    }
+}
+
+/// 终端 → 通知: what a terminal may tell the user about while they look
+/// elsewhere. Both on until the user turns them off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationSettings {
+    /// 程序发送的通知: OSC 9 and 777.
+    pub programs: bool,
+    /// 响铃时通知.
+    pub bell: bool,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            programs: true,
+            bell: true,
+        }
+    }
+}
+
+/// 外部 CLI.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExternalCliSettings {
+    /// Whether the `shellrs` command may use the saved hosts. Off until
+    /// the user turns it on.
+    pub enabled: bool,
+}
+
+/// 同步: where it goes through. Its keys and a WebDAV password are in the
+/// keychain, its state in the database.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SyncSettings {
+    /// Where, while sync is on.
+    pub location: Option<SyncLocation>,
+}
+
+/// 关于 → 应用更新.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateSettings {
+    /// 自动升级: look for a newer ShellRS in the background and download
+    /// it. On unless the user turns it off.
+    pub automatic: bool,
+    /// 更新渠道. A release build starts on the channel it was built for.
+    pub channel: Channel,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self {
+            automatic: true,
+            channel: Channel::of_this_build().unwrap_or(Channel::Stable),
+        }
+    }
+}
+
+/// 关于 → 隐私.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AnalyticsSettings {
+    /// 发送匿名使用统计. On unless the user turns it off.
+    pub enabled: bool,
+}
+
+impl Default for AnalyticsSettings {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// The longest 自定义提示词, in characters.
+pub const AI_PROMPT_LIMIT: usize = 8000;
+/// 行为 → 最大执行轮次.
+pub const AI_MAX_ROUNDS_RANGE: std::ops::RangeInclusive<u32> = 1..=1000;
+/// 行为 → 命令超时（秒）.
+pub const AI_COMMAND_TIMEOUT_RANGE: std::ops::RangeInclusive<u32> = 1..=3600;
+/// 行为 → 附带终端最近输出行数.
+pub const AI_RECENT_OUTPUT_RANGE: std::ops::RangeInclusive<u32> = 0..=1000;
+
+/// AI 助手: the environments it may talk to, how it runs commands, and what
+/// of the terminal it takes as context. No secret is kept here; an API
+/// environment names where a service is, never a key for it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiAssistantSettings {
+    /// 启用 AI 助手.
+    pub enabled: bool,
+    /// API 环境, in the order the settings page lists them.
+    pub environments: Vec<AiEnvironment>,
+    /// The environment in use, by `AiEnvironment::id`.
+    pub active_environment: Option<u64>,
+    /// 网络访问 → 连接方式.
+    pub network: AiNetworkAccess,
+    /// 允许访问本地和内网地址.
+    pub allow_local_network: bool,
+    /// 最大执行轮次.
+    pub max_rounds: u32,
+    /// 命令确认策略.
+    pub confirmation: AiConfirmationStrategy,
+    /// 命令执行方式.
+    pub execution: AiExecutionMode,
+    /// 命令超时（秒）.
+    pub command_timeout_secs: u32,
+    /// 附带终端最近输出行数.
+    pub recent_output_lines: u32,
+    /// 附带命令片段索引.
+    pub include_snippets: bool,
+    /// 将备注作为 AI 上下文.
+    pub include_host_notes: bool,
+    /// 本机工作目录; `None` leaves it to the user's home folder.
+    pub working_directory: Option<String>,
+    /// 自定义提示词, after the built-in system prompt.
+    pub custom_prompt: String,
+    /// 命令防护规则.
+    pub command_rules: Vec<AiCommandRule>,
+    /// 对话展示 → 展示级别.
+    pub display: AiDisplayLevel,
+}
+
+impl Default for AiAssistantSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            environments: vec![
+                AiEnvironment {
+                    id: 1,
+                    name: "OpenAI".into(),
+                    base_url: "https://api.openai.com/v1".into(),
+                    provider: "OpenAI".into(),
+                    protocol: AiProtocol::OpenAiResponse,
+                    models: vec!["gpt-5.1".into()],
+                    official: false,
+                },
+                AiEnvironment {
+                    id: 2,
+                    name: "DeepSeek".into(),
+                    base_url: "https://api.deepseek.com".into(),
+                    provider: "DeepSeek".into(),
+                    protocol: AiProtocol::OpenAiChat,
+                    models: vec!["deepseek-chat".into(), "deepseek-reasoner".into()],
+                    official: false,
+                },
+            ],
+            active_environment: Some(1),
+            network: AiNetworkAccess::System,
+            allow_local_network: false,
+            max_rounds: 100,
+            confirmation: AiConfirmationStrategy::Balanced,
+            execution: AiExecutionMode::Background,
+            command_timeout_secs: 30,
+            recent_output_lines: 50,
+            include_snippets: false,
+            include_host_notes: false,
+            working_directory: None,
+            custom_prompt: String::new(),
+            command_rules: Vec::new(),
+            display: AiDisplayLevel::Standard,
+        }
+    }
+}
+
+impl AiAssistantSettings {
+    /// Keep every number where the page offers it, trim the strings the user
+    /// typed, and make sure the active environment still exists.
+    fn normalized(mut self) -> Self {
+        self.max_rounds = self
+            .max_rounds
+            .clamp(*AI_MAX_ROUNDS_RANGE.start(), *AI_MAX_ROUNDS_RANGE.end());
+        self.command_timeout_secs = self.command_timeout_secs.clamp(
+            *AI_COMMAND_TIMEOUT_RANGE.start(),
+            *AI_COMMAND_TIMEOUT_RANGE.end(),
+        );
+        self.recent_output_lines = self.recent_output_lines.clamp(
+            *AI_RECENT_OUTPUT_RANGE.start(),
+            *AI_RECENT_OUTPUT_RANGE.end(),
+        );
+        if self.custom_prompt.chars().count() > AI_PROMPT_LIMIT {
+            self.custom_prompt = self.custom_prompt.chars().take(AI_PROMPT_LIMIT).collect();
+        }
+        self.working_directory = self
+            .working_directory
+            .map(|directory| directory.trim().to_string())
+            .filter(|directory| !directory.is_empty());
+
+        let mut ids = std::collections::BTreeSet::new();
+        self.environments = self
+            .environments
+            .into_iter()
+            .filter_map(AiEnvironment::normalized)
+            .filter(|environment| ids.insert(environment.id))
+            .collect();
+        if !self
+            .environments
+            .iter()
+            .any(|environment| Some(environment.id) == self.active_environment)
+        {
+            self.active_environment = self.environments.first().map(|environment| environment.id);
+        }
+
+        self.command_rules = self
+            .command_rules
+            .into_iter()
+            .filter_map(|mut rule| {
+                rule.pattern = rule.pattern.trim().to_string();
+                (!rule.pattern.is_empty()).then_some(rule)
+            })
+            .take(500)
+            .collect();
+        self
+    }
+}
+
+/// One API environment. It says where a service is and which protocol it
+/// speaks; a key belongs in the keychain, not in the settings file.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiEnvironment {
+    /// Stable within the settings file, so the active one survives a rename.
+    pub id: u64,
+    pub name: String,
+    pub base_url: String,
+    /// How the settings page names the service, e.g. OpenAI or DeepSeek.
+    pub provider: String,
+    pub protocol: AiProtocol,
+    /// The models this environment offers, in the order they were entered.
+    pub models: Vec<String>,
+    /// A service ShellRS runs itself, which may show a balance and a top-up
+    /// command. User-added environments are not official.
+    pub official: bool,
+}
+
+impl AiEnvironment {
+    fn normalized(mut self) -> Option<Self> {
+        self.name = self.name.trim().to_string();
+        self.base_url = self.base_url.trim().to_string();
+        self.provider = self.provider.trim().to_string();
+        if self.provider.is_empty() {
+            self.provider = self.name.clone();
+        }
+        let mut models = std::collections::BTreeSet::new();
+        self.models = self
+            .models
+            .into_iter()
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty() && models.insert(model.clone()))
+            .collect();
+        (!self.name.is_empty() && !self.base_url.is_empty()).then_some(self)
+    }
+}
+
+/// 命令防护规则: a regular expression matched against a command, and what
+/// to do when it matches.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiCommandRule {
+    pub pattern: String,
+    pub action: AiCommandAction,
+}
+
+/// 网络访问 → 连接方式.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiNetworkAccess {
+    /// 跟随系统: the system proxy, or a direct connection when it has none.
+    #[default]
+    System,
+    /// 直接连接, without a proxy.
+    Direct,
+}
+
+/// 命令确认策略.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiConfirmationStrategy {
+    /// 平衡模式: direct for ordinary steps, ask before dangerous ones.
+    #[default]
+    Balanced,
+    /// Ask before every command.
+    AlwaysAsk,
+    /// Run steps without asking, except where a rule says otherwise.
+    AutoApprove,
+}
+
+/// 命令执行方式.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiExecutionMode {
+    /// 后台执行: a separate SSH exec channel.
+    #[default]
+    Background,
+    /// 终端 Shell: reuse the terminal's own shell.
+    Terminal,
+}
+
+/// 对话展示 → 展示级别.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiDisplayLevel {
+    Compact,
+    #[default]
+    Standard,
+    Detailed,
+}
+
+/// The wire protocol an API environment speaks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiProtocol {
+    /// OpenAI Chat Completions.
+    OpenAiChat,
+    /// OpenAI Responses.
+    #[default]
+    OpenAiResponse,
+    /// Anthropic Messages.
+    AnthropicMessages,
+}
+
+/// What a 命令防护规则 does when its pattern matches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiCommandAction {
+    /// 需要确认.
+    #[default]
+    Confirm,
+    /// 不允许执行.
+    Deny,
+}
+
+impl Choice for Channel {
+    const ALL: &'static [Self] = &[Self::Stable, Self::Beta];
+
+    fn key(self) -> &'static str {
+        Channel::key(self)
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::Stable => t!("settings.channel.stable"),
+            Self::Beta => "Beta".into(),
+        }
+    }
+}
+
+impl Choice for FileIconStyle {
+    const ALL: &'static [Self] = &[Self::Monochrome, Self::Color];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Monochrome => "monochrome",
+            Self::Color => "color",
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::Monochrome => t!("settings.file_icons.monochrome"),
+            Self::Color => t!("settings.file_icons.color"),
+        }
+    }
+}
+
+impl Choice for TerminalCursorStyle {
+    const ALL: &'static [Self] = &[Self::Block, Self::Underline, Self::Beam];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Block => "block",
+            Self::Underline => "underline",
+            Self::Beam => "beam",
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::Block => t!("settings.cursor_style.block"),
+            Self::Underline => t!("settings.cursor_style.underline"),
+            Self::Beam => t!("settings.cursor_style.beam"),
+        }
+    }
+}
+
+impl Choice for RightClick {
+    const ALL: &'static [Self] = &[Self::Nothing, Self::Paste, Self::Menu];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Nothing => "nothing",
+            Self::Paste => "paste",
+            Self::Menu => "menu",
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::Nothing => t!("settings.right_click.nothing"),
+            Self::Paste => t!("settings.right_click.paste"),
+            Self::Menu => t!("settings.right_click.menu"),
+        }
+    }
+}
+
+impl Choice for AiNetworkAccess {
+    const ALL: &'static [Self] = &[Self::System, Self::Direct];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Direct => "direct",
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::System => t!("settings.ai.network.system"),
+            Self::Direct => t!("settings.ai.network.direct"),
+        }
+    }
+}
+
+impl Choice for AiConfirmationStrategy {
+    const ALL: &'static [Self] = &[Self::Balanced, Self::AlwaysAsk, Self::AutoApprove];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Balanced => "balanced",
+            Self::AlwaysAsk => "always-ask",
+            Self::AutoApprove => "auto-approve",
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::Balanced => t!("settings.ai.confirmation.balanced"),
+            Self::AlwaysAsk => t!("settings.ai.confirmation.always_ask"),
+            Self::AutoApprove => t!("settings.ai.confirmation.auto_approve"),
+        }
+    }
+}
+
+impl Choice for AiExecutionMode {
+    const ALL: &'static [Self] = &[Self::Background, Self::Terminal];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Background => "background",
+            Self::Terminal => "terminal",
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::Background => t!("settings.ai.execution.background"),
+            Self::Terminal => t!("settings.ai.execution.terminal"),
+        }
+    }
+}
+
+impl Choice for AiDisplayLevel {
+    const ALL: &'static [Self] = &[Self::Compact, Self::Standard, Self::Detailed];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Standard => "standard",
+            Self::Detailed => "detailed",
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::Compact => t!("settings.ai.display.compact"),
+            Self::Standard => t!("settings.ai.display.standard"),
+            Self::Detailed => t!("settings.ai.display.detailed"),
+        }
+    }
+}
+
+impl Choice for AiProtocol {
+    const ALL: &'static [Self] = &[
+        Self::OpenAiResponse,
+        Self::OpenAiChat,
+        Self::AnthropicMessages,
+    ];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::OpenAiChat => "openai-chat",
+            Self::OpenAiResponse => "openai-response",
+            Self::AnthropicMessages => "anthropic-messages",
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::OpenAiChat => "OpenAI-Chat".into(),
+            Self::OpenAiResponse => "OpenAI-Response".into(),
+            Self::AnthropicMessages => "Anthropic-Messages".into(),
+        }
+    }
+}
+
+impl Choice for AiCommandAction {
+    const ALL: &'static [Self] = &[Self::Confirm, Self::Deny];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Confirm => "confirm",
+            Self::Deny => "deny",
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::Confirm => t!("settings.ai.rules.confirm"),
+            Self::Deny => t!("settings.ai.rules.deny"),
+        }
+    }
+}
+
+impl AppSettings {
+    /// The global CLI switch always applies, including behind the password gate.
+    pub fn is_external_cli_allowed(&self, locked: bool) -> bool {
+        self.external_cli.enabled && (!locked || self.app_lock_allow_cli)
+    }
+
+    /// The settings with every number in the range the app accepts. Applied
+    /// to what the file holds and to every change, so neither a hand-edited
+    /// file nor a typed value can give the terminal a size of zero.
+    pub fn normalized(mut self) -> Self {
+        self.terminal_font = self.terminal_font.normalized();
+        // Whole pixels in range; what is not a number gives the default.
+        let size = self.interface.font_size;
+        self.interface.font_size = if size.is_finite() {
+            size.clamp(
+                *INTERFACE_FONT_SIZE_RANGE.start(),
+                *INTERFACE_FONT_SIZE_RANGE.end(),
+            )
+            .round()
+        } else {
+            DEFAULT_INTERFACE_FONT_SIZE
+        };
+        self.sidebar_widths = self.sidebar_widths.normalized();
+        self.terminal_background = self.terminal_background.normalized();
+        // The examples of old as they came are today's presets.
+        if are_former_examples(&self.terminal_highlight.rules) {
+            self.terminal_highlight.rules = default_rules();
+        }
+        self.transfers.parallel = self.transfers.parallel.clamp(
+            *PARALLEL_TRANSFERS_RANGE.start(),
+            *PARALLEL_TRANSFERS_RANGE.end(),
+        );
+        self.local_terminal.shell = self
+            .local_terminal
+            .shell
+            .map(|shell| shell.trim().to_string())
+            .filter(|shell| !shell.is_empty());
+        self.ai = self.ai.normalized();
+        self
+    }
+}
+
+/// 终端 → 字体配置.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalFontSettings {
+    /// `None` is the theme's monospace family (Menlo on macOS).
+    pub family: Option<String>,
+    /// Pixels.
+    pub size: f32,
+    /// A multiple of `size`.
+    pub line_height: f32,
+}
+
+impl Default for TerminalFontSettings {
+    fn default() -> Self {
+        Self {
+            family: None,
+            size: DEFAULT_FONT_SIZE,
+            line_height: DEFAULT_LINE_HEIGHT,
+        }
+    }
+}
+
+impl TerminalFontSettings {
+    /// Whole pixels, and line heights to two decimals, each within the
+    /// terminal's range. A value that is not a number falls back to its
+    /// default.
+    fn normalized(mut self) -> Self {
+        let clamp = |value: f32, range: std::ops::RangeInclusive<f32>, default: f32| {
+            if value.is_finite() {
+                value.clamp(*range.start(), *range.end())
+            } else {
+                default
+            }
+        };
+        self.size = clamp(self.size, FONT_SIZE_RANGE, DEFAULT_FONT_SIZE).round();
+        self.line_height =
+            (clamp(self.line_height, LINE_HEIGHT_RANGE, DEFAULT_LINE_HEIGHT) * 100.).round() / 100.;
+        self.family = self.family.filter(|family| !family.trim().is_empty());
+        self
+    }
+}
+
+/// A setting with a fixed set of values, shown as a dropdown.
+pub trait Choice: Copy + PartialEq + 'static {
+    /// Every value, in the order the dropdown lists them.
+    const ALL: &'static [Self];
+    /// How the value is written in the settings file.
+    fn key(self) -> &'static str;
+    fn label(self) -> SharedString;
+
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|choice| choice.key() == key)
+    }
+}
+
+/// 界面语言, for ShellRS's text and gpui-kit's own. It changes the window
+/// at once.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InterfaceLanguage {
+    // A settings file written before there was English says `zh-CN`, as
+    // the default was then, and stays Chinese.
+    #[default]
+    #[serde(rename = "system")]
+    System,
+    #[serde(rename = "zh-CN")]
+    SimplifiedChinese,
+    #[serde(rename = "en")]
+    English,
+}
+
+impl Choice for InterfaceLanguage {
+    const ALL: &'static [Self] = &[Self::System, Self::SimplifiedChinese, Self::English];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::SimplifiedChinese => "zh-CN",
+            Self::English => "en",
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::System => t!("settings.choice.system"),
+            // A language is named in itself, so it can be found by someone
+            // who cannot read the rest of the menu.
+            Self::SimplifiedChinese => "简体中文".into(), // i18n: keep
+            Self::English => "English".into(),
+        }
+    }
+}
+
+impl InterfaceLanguage {
+    /// The locale the interface runs in. `system` is the operating system's
+    /// preferred language tag, such as `zh-Hans-CN` or `en-US`; any Chinese
+    /// gets Simplified Chinese, the only Chinese there is, and anything else
+    /// English. When the system does not say, the interface stays Chinese.
+    pub fn locale(self, system: Option<&str>) -> &'static str {
+        match self {
+            Self::SimplifiedChinese => "zh-CN",
+            Self::English => "en",
+            Self::System => match system {
+                Some(tag) => {
+                    let language = tag.split(['-', '_']).next().unwrap_or_default();
+                    if language.eq_ignore_ascii_case("zh") {
+                        "zh-CN"
+                    } else {
+                        "en"
+                    }
+                }
+                None => "zh-CN",
+            },
+        }
+    }
+
+    /// `locale` with the operating system's preferred language.
+    pub fn resolved(self) -> &'static str {
+        self.locale(sys_locale::get_locale().as_deref())
+    }
+}
+
+/// 应用外观.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Appearance {
+    #[serde(rename = "dark")]
+    Dark,
+    #[serde(rename = "light")]
+    Light,
+    #[default]
+    #[serde(rename = "system")]
+    System,
+}
+
+impl Choice for Appearance {
+    const ALL: &'static [Self] = &[Self::Dark, Self::Light, Self::System];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+            Self::System => "system",
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::Dark => t!("settings.appearance.dark"),
+            Self::Light => t!("settings.appearance.light"),
+            Self::System => t!("settings.choice.system"),
+        }
+    }
+}
+
+impl Appearance {
+    /// The theme to use while the window has `window` appearance.
+    pub fn theme_mode(self, window: WindowAppearance) -> ThemeMode {
+        match self {
+            Self::Dark => ThemeMode::Dark,
+            Self::Light => ThemeMode::Light,
+            Self::System => window.into(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn background_pictures_are_off_until_chosen_and_a_stray_value_is_put_right() {
+        // A file from before has none.
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let background = settings.terminal_background.for_mode(mode);
+            assert_eq!(*background, BackgroundImageSettings::default());
+            assert!(!background.enabled && background.image.is_none());
+            assert_eq!(background.opacity, DEFAULT_BACKGROUND_OPACITY);
+            assert_eq!(background.shown(), None);
+        }
+
+        let settings: AppSettings = serde_json::from_str(
+            r#"{"terminal_background":{
+                "light":{"enabled":true,"image":"","opacity":7},
+                "dark":{"enabled":true,"image":"night.png","opacity":-1}}}"#,
+        )
+        .unwrap();
+        let settings = settings.normalized();
+        let light = &settings.terminal_background.light;
+        assert_eq!((light.image.as_deref(), light.opacity), (None, 1.));
+        // On, but with nothing to show.
+        assert_eq!(light.shown(), None);
+        let dark = &settings.terminal_background.dark;
+        assert_eq!(dark.shown(), Some(Path::new("night.png")));
+        assert_eq!(dark.opacity, 0.);
+
+        let mut background = BackgroundImageSettings {
+            opacity: f32::NAN,
+            ..BackgroundImageSettings::default()
+        };
+        background = background.normalized();
+        assert_eq!(background.opacity, DEFAULT_BACKGROUND_OPACITY);
+        background.image = Some("night.png".into());
+        assert_eq!(background.shown(), None, "off, it shows nothing");
+    }
+
+    #[test]
+    fn app_lock_cli_access_requires_the_global_switch_and_explicit_permission() {
+        for enabled in [false, true] {
+            for allowed in [false, true] {
+                let mut settings = AppSettings::default();
+                settings.external_cli.enabled = enabled;
+                settings.app_lock_allow_cli = allowed;
+                assert_eq!(settings.is_external_cli_allowed(false), enabled);
+                assert_eq!(settings.is_external_cli_allowed(true), enabled && allowed);
+            }
+        }
+    }
+
+    #[test]
+    fn the_file_spells_each_value_as_its_key() {
+        fn check<T: Choice + Serialize + for<'de> Deserialize<'de> + std::fmt::Debug>() {
+            for &choice in T::ALL {
+                let json = serde_json::to_string(&choice).unwrap();
+                assert_eq!(json, format!("\"{}\"", choice.key()));
+                assert_eq!(serde_json::from_str::<T>(&json).unwrap(), choice);
+                assert_eq!(T::from_key(choice.key()), Some(choice));
+            }
+        }
+        check::<InterfaceLanguage>();
+        check::<Appearance>();
+        check::<RightClick>();
+        check::<TerminalCursorStyle>();
+        check::<FileIconStyle>();
+        check::<AiNetworkAccess>();
+        check::<AiConfirmationStrategy>();
+        check::<AiExecutionMode>();
+        check::<AiDisplayLevel>();
+        check::<AiProtocol>();
+        check::<AiCommandAction>();
+        assert_eq!(Appearance::from_key("sepia"), None);
+    }
+
+    #[test]
+    fn ai_assistant_settings_start_with_example_environments_and_stay_in_range() {
+        let settings = AppSettings::default();
+        assert!(!settings.ai.enabled);
+        assert_eq!(settings.ai.environments.len(), 2);
+        assert_eq!(settings.ai.active_environment, Some(1));
+        assert_eq!(settings.ai.max_rounds, 100);
+        assert_eq!(settings.ai.command_timeout_secs, 30);
+        assert_eq!(settings.ai.recent_output_lines, 50);
+        assert_eq!(settings.ai.confirmation, AiConfirmationStrategy::Balanced);
+        assert_eq!(settings.ai.execution, AiExecutionMode::Background);
+        assert_eq!(settings.ai.display, AiDisplayLevel::Standard);
+
+        // An older file has no AI section: it gets the same defaults.
+        let read: AppSettings = serde_json::from_str(r#"{"ai":{}}"#).unwrap();
+        assert_eq!(read.ai, settings.ai);
+
+        let normalized = AppSettings {
+            ai: AiAssistantSettings {
+                max_rounds: 0,
+                command_timeout_secs: 0,
+                recent_output_lines: 50_000,
+                custom_prompt: "x".repeat(AI_PROMPT_LIMIT + 10),
+                working_directory: Some("   ".into()),
+                environments: vec![
+                    AiEnvironment {
+                        id: 9,
+                        name: "  Example  ".into(),
+                        base_url: " https://example.test/v1 ".into(),
+                        provider: "  ".into(),
+                        models: vec![" model-a ".into(), "".into(), "model-a".into()],
+                        ..AiEnvironment::default()
+                    },
+                    AiEnvironment::default(),
+                ],
+                active_environment: Some(404),
+                command_rules: vec![
+                    AiCommandRule {
+                        pattern: " ^sudo ".into(),
+                        action: AiCommandAction::Deny,
+                    },
+                    AiCommandRule::default(),
+                ],
+                ..AiAssistantSettings::default()
+            },
+            ..AppSettings::default()
+        }
+        .normalized()
+        .ai;
+        assert_eq!(normalized.max_rounds, *AI_MAX_ROUNDS_RANGE.start());
+        assert_eq!(
+            normalized.command_timeout_secs,
+            *AI_COMMAND_TIMEOUT_RANGE.start()
+        );
+        assert_eq!(
+            normalized.recent_output_lines,
+            *AI_RECENT_OUTPUT_RANGE.end()
+        );
+        assert_eq!(normalized.custom_prompt.chars().count(), AI_PROMPT_LIMIT);
+        assert_eq!(normalized.working_directory, None);
+        assert_eq!(normalized.environments.len(), 1);
+        let environment = &normalized.environments[0];
+        assert_eq!(
+            (
+                environment.name.as_str(),
+                environment.base_url.as_str(),
+                environment.provider.as_str(),
+            ),
+            ("Example", "https://example.test/v1", "Example")
+        );
+        assert_eq!(environment.models, ["model-a"]);
+        assert_eq!(normalized.active_environment, Some(9));
+        assert_eq!(normalized.command_rules.len(), 1);
+        assert_eq!(normalized.command_rules[0].pattern, "^sudo");
+    }
+
+    #[test]
+    fn a_file_missing_a_setting_keeps_its_default() {
+        let settings: AppSettings = serde_json::from_str(r#"{"appearance":"dark"}"#).unwrap();
+        assert_eq!(settings.appearance, Appearance::Dark);
+        assert_eq!(settings.app_lock_idle_minutes, 0);
+        assert!(!settings.app_lock_allow_cli);
+        assert_eq!(settings.language, InterfaceLanguage::default());
+        let settings: AppSettings = serde_json::from_str(r#"{"later":1}"#).unwrap();
+        assert_eq!(settings, AppSettings::default());
+        assert_eq!(settings.file_size_format, FileSizeFormat::Kilobytes);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"file_size_format":"short"}"#).unwrap();
+        assert_eq!(settings.file_size_format, FileSizeFormat::Short);
+        // The SFTP lists show color icons, as in WinSCP, unless asked not to.
+        assert_eq!(AppSettings::default().file_icon_style, FileIconStyle::Color);
+        // Hidden files are left out unless the file says otherwise, for
+        // each side on its own.
+        assert_eq!(
+            AppSettings::default().show_hidden,
+            ShowHiddenFiles::default()
+        );
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"show_hidden":{"remote":true}}"#).unwrap();
+        assert!(settings.show_hidden.remote);
+        assert!(!settings.show_hidden.local);
+        // 文件 looks for and follows the terminal's folder unless told not to.
+        assert!(AppSettings::default().file_sidebar.detect_directory_follow);
+        let settings: AppSettings = serde_json::from_str(r#"{"file_sidebar":{}}"#).unwrap();
+        assert!(settings.file_sidebar.detect_directory_follow);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"file_sidebar":{"detect_directory_follow":false}}"#).unwrap();
+        assert!(!settings.file_sidebar.detect_directory_follow);
+    }
+
+    /// 侧栏功能: every tool but GPU/NPU until the user says otherwise, and
+    /// only what differs from that in the file.
+    #[test]
+    fn the_sidebar_offers_its_usual_tools_until_told_otherwise() {
+        let tools = AppSettings::default().sidebar_tools;
+        assert!(tools.is_default());
+        assert!(tools.shows(ToolKind::Monitor));
+        assert!(!tools.shows(ToolKind::Gpu));
+
+        let mut tools = SidebarTools::default();
+        tools.set(ToolKind::Gpu, true);
+        tools.set(ToolKind::Docker, false);
+        assert!(!tools.is_default());
+        assert_eq!(
+            serde_json::to_value(&tools).unwrap(),
+            serde_json::json!({"docker": false, "gpu": true})
+        );
+        // Back to its default is no change at all.
+        tools.set(ToolKind::Docker, true);
+        assert_eq!(
+            serde_json::to_value(&tools).unwrap(),
+            serde_json::json!({"gpu": true})
+        );
+        tools.reset();
+        assert_eq!(tools, SidebarTools::default());
+
+        // A newer version's tool is kept; a value that is no yes or no
+        // costs only itself.
+        let settings: AppSettings = serde_json::from_str(
+            r#"{"sidebar_tools":{"gpu":true,"k8s":true,"docker":"no","history":false}}"#,
+        )
+        .unwrap();
+        let tools = settings.sidebar_tools;
+        assert!(tools.shows(ToolKind::Gpu));
+        assert!(tools.shows(ToolKind::Docker));
+        assert!(!tools.shows(ToolKind::History));
+        assert_eq!(
+            serde_json::to_value(&tools).unwrap(),
+            serde_json::json!({"gpu": true, "history": false, "k8s": true})
+        );
+        let mut tools = tools;
+        tools.reset();
+        assert!(tools.is_default());
+        assert_eq!(
+            serde_json::to_value(&tools).unwrap(),
+            serde_json::json!({"k8s": true}),
+            "not this version's to reset"
+        );
+    }
+
+    /// The sidebar beside local terminals: hidden until opened, by key in
+    /// the file, and hidden again for a value it does not know.
+    #[test]
+    fn the_local_sidebar_keeps_its_tool_by_key() {
+        assert_eq!(AppSettings::default().local_sidebar_tool, None);
+        assert!(ToolKind::Projects.shown_by_default());
+        let settings = AppSettings {
+            local_sidebar_tool: Some(ToolKind::Projects),
+            ..AppSettings::default()
+        };
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["local_sidebar_tool"], "projects");
+        let read: AppSettings = serde_json::from_value(json).unwrap();
+        assert_eq!(read, settings);
+        for stray in [r#""notes""#, "3", "{}", "null"] {
+            let read: AppSettings = serde_json::from_str(&format!(
+                r#"{{"local_sidebar_tool":{stray},"sidebar_tools":{{"gpu":true}}}}"#
+            ))
+            .unwrap();
+            assert_eq!(read.local_sidebar_tool, None, "{stray}");
+            assert!(read.sidebar_tools.shows(ToolKind::Gpu));
+        }
+    }
+
+    /// 保留终端内容 is on in a file from before it, as in a new one.
+    #[test]
+    fn terminal_output_is_kept_unless_turned_off() {
+        assert!(AppSettings::default().local_terminal.keep_output);
+        let read: AppSettings =
+            serde_json::from_str(r#"{"local_terminal":{"shell":"/bin/zsh"}}"#).unwrap();
+        assert!(read.local_terminal.keep_output);
+        let read: AppSettings =
+            serde_json::from_str(r#"{"local_terminal":{"keep_output":false}}"#).unwrap();
+        assert!(!read.local_terminal.keep_output);
+    }
+
+    /// 界面字号: gpui-kit's 16 (14 on Windows) until changed, whole pixels
+    /// within 12–20.
+    #[test]
+    fn the_interface_font_stays_as_it_was_until_changed() {
+        let default = if cfg!(windows) { 14. } else { 16. };
+        assert_eq!(AppSettings::default().interface.font_size, default);
+        let settings: AppSettings = serde_json::from_str(r#"{"interface":{}}"#).unwrap();
+        assert_eq!(settings.interface.font_size, default);
+        for (written, kept) in [
+            (14., 14.),
+            (14.6, 15.),
+            (8., 12.),
+            (30., 20.),
+            (f32::NAN, default),
+        ] {
+            let settings = AppSettings {
+                interface: InterfaceSettings { font_size: written },
+                ..AppSettings::default()
+            };
+            assert_eq!(settings.normalized().interface.font_size, kept, "{written}");
+        }
+    }
+
+    /// 最大同时传输数量: three unless the file says otherwise, and never
+    /// beyond what the settings page offers.
+    #[test]
+    fn transfers_run_three_at_once_unless_the_file_says_otherwise() {
+        assert_eq!(AppSettings::default().transfers.parallel, 3);
+        let settings: AppSettings = serde_json::from_str(r#"{"transfers":{}}"#).unwrap();
+        assert_eq!(settings.transfers.parallel, 3);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"transfers":{"parallel":6}}"#).unwrap();
+        assert_eq!(settings.normalized().transfers.parallel, 6);
+        for (written, kept) in [(0, 1), (50, 10)] {
+            let settings = AppSettings {
+                transfers: TransferSettings { parallel: written },
+                ..AppSettings::default()
+            };
+            assert_eq!(settings.normalized().transfers.parallel, kept);
+        }
+    }
+
+    #[test]
+    fn local_terminals_run_the_default_shell_unless_the_file_names_one() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.local_terminal.shell, None);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"local_terminal":{"shell":" /bin/zsh -l "}}"#).unwrap();
+        assert_eq!(
+            settings.normalized().local_terminal.shell.as_deref(),
+            Some("/bin/zsh -l")
+        );
+        let blank = AppSettings {
+            local_terminal: LocalTerminalSettings {
+                shell: Some("  ".into()),
+                ..LocalTerminalSettings::default()
+            },
+            ..AppSettings::default()
+        };
+        assert_eq!(blank.normalized(), AppSettings::default());
+    }
+
+    #[test]
+    fn notifications_are_on_unless_the_file_says_otherwise() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(settings.notifications.programs && settings.notifications.bell);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"notifications":{"bell":false}}"#).unwrap();
+        assert!(settings.notifications.programs && !settings.notifications.bell);
+    }
+
+    #[test]
+    fn highlight_rules_start_as_examples_and_stay_as_the_user_leaves_them() {
+        // Off, with the examples each on and quiet, ready for when it is.
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.terminal_highlight.enabled);
+        assert_eq!(settings.terminal_highlight.rules, default_rules());
+        assert!(
+            default_rules()
+                .iter()
+                .all(|rule| rule.enabled && !rule.notify)
+        );
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"terminal_highlight":{"enabled":true,"rules":[]}}"#).unwrap();
+        assert!(settings.terminal_highlight.enabled);
+        assert!(settings.terminal_highlight.rules.is_empty());
+        let json = serde_json::to_value(AppSettings::default()).unwrap();
+        assert_eq!(
+            json["terminal_highlight"]["rules"][1],
+            serde_json::json!({
+                "enabled": true,
+                "pattern": r"\b(?:SUCCESS|SUCCEEDED|OK|PASSED|DONE|READY|HEALTHY|UP|ESTABLISHED|NORMAL|ONLINE|PERMIT|ACTIVE|RUNNING|UNSPEC)\b",
+                "note": "成功、正常、连通",
+                "color": "#22913e",
+                "notify": false
+            })
+        );
+    }
+
+    #[test]
+    fn the_examples_of_old_become_the_presets_and_the_users_rules_stay() {
+        let examples = r##"{"terminal_highlight":{"enabled":true,"rules":[
+            {"enabled":true,"pattern":"ERROR","note":"Error","color":"#e5484d","notify":false},
+            {"enabled":true,"pattern":"WARN","note":"Warning","color":"#f5b51c","notify":false},
+            {"enabled":true,"pattern":"\\b\\d{1,3}(\\.\\d{1,3}){3}\\b","note":"IPv4 address",
+             "color":"#2d8ce6","notify":false}]}}"##;
+        let settings: AppSettings = serde_json::from_str(examples).unwrap();
+        let settings = settings.normalized();
+        assert!(settings.terminal_highlight.enabled);
+        assert_eq!(settings.terminal_highlight.rules, default_rules());
+
+        let edited = examples.replace(r#""WARN""#, r#""WARNING""#);
+        let settings: AppSettings = serde_json::from_str(&edited).unwrap();
+        let rules = settings.normalized().terminal_highlight.rules;
+        assert_eq!(rules.len(), 3);
+        assert_eq!(rules[1].pattern, "WARNING");
+    }
+
+    #[test]
+    fn a_rule_this_version_cannot_read_costs_only_itself() {
+        let settings: AppSettings = serde_json::from_str(
+            r##"{
+                "appearance": "dark",
+                "terminal_highlight": {"rules": [
+                    {"pattern": "FATAL", "color": "orange"},
+                    {"pattern": "OOM", "color": "#D946EF", "notify": true},
+                    {"pattern": ""},
+                    7
+                ]}
+            }"##,
+        )
+        .unwrap();
+        assert_eq!(settings.appearance, Appearance::Dark);
+        let rules = &settings.terminal_highlight.rules;
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].pattern, "OOM");
+        assert_eq!(rules[0].color.to_hex(), "#d946ef");
+        assert!(rules[0].enabled && rules[0].notify);
+        // A row added and not filled in yet stays, to be filled in.
+        assert_eq!(rules[1], HighlightRule::default());
+    }
+
+    #[test]
+    fn terminal_themes_fall_back_to_the_default_for_their_appearance() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        let themes = &settings.terminal_theme;
+        assert_eq!(themes.light, "shellrs-light");
+        assert_eq!(themes.dark, "shellrs-dark");
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            assert_eq!(themes.theme(mode), TerminalTheme::default_for(mode));
+        }
+
+        // A key from a newer version, and a dark theme where a light one
+        // belongs, each give way on their own side only.
+        let settings: AppSettings = serde_json::from_str(
+            r#"{"appearance":"dark","terminal_theme":{"light":"shellrs-dark","dark":"sepia"}}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.appearance, Appearance::Dark);
+        let themes = &settings.terminal_theme;
+        assert_eq!(
+            themes.theme(ThemeMode::Light),
+            TerminalTheme::default_for(ThemeMode::Light)
+        );
+        assert_eq!(
+            themes.theme(ThemeMode::Dark),
+            TerminalTheme::default_for(ThemeMode::Dark)
+        );
+
+        // Choosing a theme sets the side it is made for, by key.
+        let mut themes = TerminalThemeSettings::default();
+        let dark = TerminalTheme::for_mode(ThemeMode::Dark).last().unwrap();
+        themes.choose(dark);
+        assert_eq!(themes.theme(ThemeMode::Dark), dark);
+        assert_eq!(
+            themes.theme(ThemeMode::Light),
+            TerminalTheme::default_for(ThemeMode::Light)
+        );
+        assert_eq!(
+            serde_json::to_value(&themes).unwrap(),
+            serde_json::json!({"light": "shellrs-light", "dark": dark.key(), "app_follows": false})
+        );
+
+        // The app stays neutral, the default's colors, gpui-kit's own,
+        // unless told to follow; the terminals have the theme either way.
+        assert_eq!(
+            themes.app_theme(ThemeMode::Dark),
+            TerminalTheme::default_for(ThemeMode::Dark)
+        );
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"terminal_theme":{"dark":"nord","app_follows":true}}"#)
+                .unwrap();
+        let themes = &settings.terminal_theme;
+        assert_eq!(themes.theme(ThemeMode::Dark).key(), "nord");
+        assert_eq!(themes.app_theme(ThemeMode::Dark).key(), "nord");
+        assert!(!themes.is_default_choice());
+    }
+
+    #[test]
+    fn the_window_is_remembered_unless_the_file_says_otherwise() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(settings.window.remember_size && settings.window.remember_position);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"window":{"remember_position":false}}"#).unwrap();
+        assert!(settings.window.remember_size && !settings.window.remember_position);
+    }
+
+    #[test]
+    fn closing_to_the_tray_is_opt_in_and_keeps_older_window_settings() {
+        for json in ["{}", r#"{"window":{"remember_position":false}}"#] {
+            let settings: AppSettings = serde_json::from_str(json).unwrap();
+            assert!(!settings.window.close_to_tray);
+        }
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"window":{"close_to_tray":true}}"#).unwrap();
+        assert!(settings.window.close_to_tray);
+        assert!(settings.window.remember_size && settings.window.remember_position);
+    }
+
+    #[test]
+    fn terminals_show_the_menu_and_copy_only_on_command_unless_the_file_says_otherwise() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.terminal_interaction.copy_on_select);
+        assert_eq!(settings.terminal_interaction.right_click, RightClick::Menu);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"terminal_interaction":{"right_click":"paste"}}"#).unwrap();
+        assert!(!settings.terminal_interaction.copy_on_select);
+        assert_eq!(settings.terminal_interaction.right_click, RightClick::Paste);
+        assert_eq!(
+            settings.terminal_interaction.cursor_style,
+            TerminalCursorStyle::Block
+        );
+        assert!(settings.terminal_interaction.cursor_blinking);
+        let settings: AppSettings = serde_json::from_str(
+            r#"{"terminal_interaction":{"cursor_style":"underline","cursor_blinking":false}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            settings.terminal_interaction.cursor_style,
+            TerminalCursorStyle::Underline
+        );
+        assert!(!settings.terminal_interaction.cursor_blinking);
+    }
+
+    #[test]
+    fn automatic_updates_are_on_unless_the_file_says_otherwise() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(settings.update.automatic);
+        let settings: AppSettings = serde_json::from_str(r#"{"update":{}}"#).unwrap();
+        assert!(settings.update.automatic);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"update":{"automatic":false}}"#).unwrap();
+        assert!(!settings.update.automatic);
+    }
+
+    #[test]
+    fn usage_statistics_are_sent_unless_the_file_says_otherwise() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(settings.analytics.enabled);
+        let settings: AppSettings = serde_json::from_str(r#"{"analytics":{}}"#).unwrap();
+        assert!(settings.analytics.enabled);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"analytics":{"enabled":false}}"#).unwrap();
+        assert!(!settings.analytics.enabled);
+    }
+
+    #[test]
+    fn the_update_channel_is_the_builds_until_one_is_chosen() {
+        // A development build has no channel of its own.
+        let settings: AppSettings = serde_json::from_str(r#"{"update":{}}"#).unwrap();
+        assert_eq!(settings.update.channel, Channel::Stable);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"update":{"channel":"beta"}}"#).unwrap();
+        assert_eq!(settings.update.channel, Channel::Beta);
+        assert_eq!(
+            serde_json::to_value(&settings.update).unwrap()["channel"],
+            "beta"
+        );
+        assert_eq!(Channel::from_key("beta"), Some(Channel::Beta));
+    }
+
+    #[test]
+    fn terminal_font_numbers_are_kept_in_range_and_rounded() {
+        let font = |size, line_height| TerminalFontSettings {
+            family: Some("Menlo".into()),
+            size,
+            line_height,
+        };
+        let normalized = AppSettings {
+            // What stepping 1.54 by 0.1 leaves behind.
+            terminal_font: font(13.4, 1.54 + 0.1),
+            ..AppSettings::default()
+        }
+        .normalized()
+        .terminal_font;
+        assert_eq!((normalized.size, normalized.line_height), (13., 1.64));
+
+        let normalized = font(2., 9.).normalized();
+        assert_eq!(
+            (normalized.size, normalized.line_height),
+            (*FONT_SIZE_RANGE.start(), *LINE_HEIGHT_RANGE.end())
+        );
+        let normalized = font(f32::NAN, f32::INFINITY).normalized();
+        assert_eq!(
+            (normalized.size, normalized.line_height),
+            (DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT)
+        );
+        let blank = TerminalFontSettings {
+            family: Some("  ".into()),
+            ..TerminalFontSettings::default()
+        };
+        assert_eq!(blank.normalized().family, None);
+        // The default already is what the terminal had before.
+        assert_eq!(
+            TerminalFontSettings::default().normalized(),
+            TerminalFontSettings::default()
+        );
+    }
+
+    #[test]
+    fn following_the_system_language_picks_chinese_or_english() {
+        let system = InterfaceLanguage::System;
+        assert_eq!(system.locale(Some("zh-Hans-CN")), "zh-CN");
+        assert_eq!(system.locale(Some("zh_TW")), "zh-CN");
+        assert_eq!(system.locale(Some("ZH")), "zh-CN");
+        assert_eq!(system.locale(Some("en-US")), "en");
+        assert_eq!(system.locale(Some("ja-JP")), "en");
+        assert_eq!(system.locale(None), "zh-CN");
+        assert_eq!(InterfaceLanguage::English.locale(Some("zh-CN")), "en");
+        assert_eq!(
+            InterfaceLanguage::SimplifiedChinese.locale(Some("en-US")),
+            "zh-CN"
+        );
+    }
+
+    #[test]
+    fn following_the_system_appearance_uses_the_window() {
+        let system = Appearance::System;
+        assert_eq!(system.theme_mode(WindowAppearance::Dark), ThemeMode::Dark);
+        assert_eq!(
+            system.theme_mode(WindowAppearance::VibrantLight),
+            ThemeMode::Light
+        );
+        assert_eq!(
+            Appearance::Light.theme_mode(WindowAppearance::Dark),
+            ThemeMode::Light
+        );
+        assert_eq!(
+            Appearance::Dark.theme_mode(WindowAppearance::Light),
+            ThemeMode::Dark
+        );
+    }
+}
