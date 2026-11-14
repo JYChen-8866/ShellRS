@@ -378,6 +378,8 @@ pub struct BlockEditorState {
     pub(crate) scroll_handle: Option<gpui::ScrollHandle>,
     /// The caret moved and should be scrolled into view after layout.
     pub(crate) reveal: std::cell::Cell<bool>,
+    /// Frames spent waiting for newly inserted caret geometry.
+    pub(crate) reveal_retries: std::cell::Cell<u8>,
     marked: Option<Marked>,
     /// An IME composition opened an undo group that is not committed yet.
     composition_open: bool,
@@ -451,6 +453,7 @@ impl BlockEditorState {
             a11y_value: RefCell::default(),
             scroll_handle: Some(gpui::ScrollHandle::new()),
             reveal: Default::default(),
+            reveal_retries: Default::default(),
             marked: None,
             composition_open: false,
             goal_x: None,
@@ -659,6 +662,7 @@ impl BlockEditorState {
     }
     /// Reveal the current caret after viewport/layout changes without moving it.
     pub fn reveal_caret(&mut self, cx: &mut Context<Self>) {
+        self.reveal_retries.set(0);
         self.reveal.set(true);
         cx.notify();
     }
@@ -882,6 +886,7 @@ impl BlockEditorState {
 
     fn after_edit(&mut self, origin: EditOrigin, cx: &mut Context<Self>) {
         self.goal_x = None;
+        self.reveal_retries.set(0);
         self.reveal.set(true);
         self.pause_blink(cx);
         cx.emit(BlockEditorEvent::Changed {
@@ -893,6 +898,7 @@ impl BlockEditorState {
     }
 
     fn selection_changed(&mut self, cx: &mut Context<Self>) {
+        self.reveal_retries.set(0);
         self.reveal.set(true);
         self.pause_blink(cx);
         cx.emit(BlockEditorEvent::SelectionChanged);

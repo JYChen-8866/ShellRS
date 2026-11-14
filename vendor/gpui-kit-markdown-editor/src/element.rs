@@ -470,8 +470,20 @@ impl EditorRoot {
             .borrow()
             .caret_bounds(pos, self.style.caret_width())
         else {
+            // Enter creates an empty block whose native leaf may not have a
+            // layout until the next frame. Retry briefly, like Quiet.md's
+            // reveal loop, instead of waiting for the next text edit.
+            let retries = state.reveal_retries.get();
+            if retries < 3 {
+                state.reveal_retries.set(retries + 1);
+                let state = self.state.clone();
+                window.on_next_frame(move |_, cx| {
+                    state.update(cx, |_, cx| cx.notify());
+                });
+            }
             return;
         };
+        state.reveal_retries.set(0);
         state.reveal.set(false);
         // The scroll owner stays at the region edge; text and the revealed
         // caret stay inside the root's presentation inset at either scroll end.
