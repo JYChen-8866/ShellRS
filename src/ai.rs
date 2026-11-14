@@ -1614,23 +1614,20 @@ impl AiAssistantPanel {
                         div()
                             .relative()
                             .w_full()
+                            .text_sm()
+                            // Match the block editor's 1.5rem row box so the
+                            // placeholder baseline and caret share one grid.
+                            .line_height(rems(1.5))
                             .when(show_placeholder, |this| {
                                 this.child(
                                     div()
                                         .id("ai-composer-placeholder")
                                         .test_support()
                                         .absolute()
-                                        .top_0()
-                                        .left_0()
-                                        .right_0()
-                                        // Match the textarea's `Size::Medium` text
-                                        // inset, plus the 10px its text element
-                                        // reserves on the right before wrapping.
-                                        .pl(px(10.))
-                                        .pr(px(20.))
-                                        .pt(px(8.))
-                                        .text_sm()
-                                        .line_height(rems(1.25))
+                                        // Same insets as markdown_editor::component.
+                                        .top(rems(0.5))
+                                        .left(rems(0.625))
+                                        .right(rems(0.625))
                                         .text_color(cx.theme().muted_foreground)
                                         .child(placeholder.clone()),
                                 )
