@@ -64,6 +64,11 @@ use claude_codes::{ClaudeModel, MediaType};
 const AI_STREAM_COMMIT_INTERVAL: Duration = Duration::from_millis(120);
 /// Width that fits the queued-message actions: 编辑 / 调整方向 / 关闭 / 复制.
 const QUEUED_MESSAGE_ACTIONS_MIN_WIDTH: f32 = 10.5;
+/// Waku caps a sent prompt at 400 px and scrolls the Markdown inside it. This
+/// keeps one pasted log from becoming a page-tall transcript row whose full
+/// block tree must be remeasured whenever the sidebar width moves.
+const USER_MESSAGE_MAX_HEIGHT: f32 = 25.0;
+const USER_MESSAGE_VIEWPORT_MAX_HEIGHT: f32 = 24.0;
 
 fn is_send_shortcut(keystroke: &Keystroke) -> bool {
     keystroke.key == "enter"
@@ -1880,8 +1885,18 @@ fn streaming_tail(text: &str) -> Option<SharedString> {
         .or_else(|| (!tail.is_empty()).then(|| SharedString::from(tail)))
 }
 
+/// Keep a wheel gesture inside a long user message while it can scroll, then
+/// let it chain to the transcript at either edge.
+fn contain_user_message_scroll(scroll: &ScrollHandle, cx: &mut App) {
+    let offset = scroll.offset().y;
+    let max_offset = scroll.max_offset().y;
+    if max_offset > px(0.5) && offset >= -max_offset && offset <= px(0.0) {
+        cx.stop_propagation();
+    }
+}
+
 fn render_message_row(
-    message: Option<Message>,
+    message: Option<&Message>,
     ix: usize,
     context: &MessageRowContext,
     panel: &Entity<AiAssistantPanel>,
@@ -1904,6 +1919,15 @@ fn render_message_row(
             let group = SharedString::from(format!("ai-user-message-{ix}"));
             let copied = message.text.clone();
             let queued_copy = copied.clone();
+            let scroll = window
+                .use_keyed_state(
+                    SharedString::from(format!("ai-user-message-scroll-{ix}")),
+                    cx,
+                    |_, _| ScrollHandle::new(),
+                )
+                .read(cx)
+                .clone();
+            let wheel_scroll = scroll.clone();
             let bubble = v_flex()
                 .min_w_0()
                 .when(message.text.contains('\n'), |bubble| {
@@ -1929,14 +1953,37 @@ fn render_message_row(
                 .px_3()
                 .py_2()
                 .text_sm()
-                .child(render_message_markdown(
-                    &message,
-                    ix,
-                    false,
-                    cwd,
-                    markdown_selection,
-                    cx,
-                ));
+                .max_h(rems(USER_MESSAGE_MAX_HEIGHT))
+                .relative()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .min_w_0()
+                        .relative()
+                        .max_h(rems(USER_MESSAGE_VIEWPORT_MAX_HEIGHT))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("ai-user-message-body-{ix}")))
+                                .test_support()
+                                .min_w_0()
+                                .max_h(rems(USER_MESSAGE_VIEWPORT_MAX_HEIGHT))
+                                .overflow_y_scroll()
+                                .track_scroll(&scroll)
+                                .on_scroll(move |_, _, cx| {
+                                    contain_user_message_scroll(&wheel_scroll, cx)
+                                })
+                                .child(render_message_markdown(
+                                    message,
+                                    ix,
+                                    false,
+                                    cwd,
+                                    markdown_selection,
+                                    cx,
+                                )),
+                        )
+                        .child(Scrollbar::vertical(&scroll)),
+                );
             v_flex()
                 .id(id)
                 .w_full()
@@ -2124,7 +2171,7 @@ fn render_message_row(
                 streaming_tail(&message.text)
             };
             let body =
-                render_message_markdown(&message, ix, is_streaming, cwd, markdown_selection, cx);
+                render_message_markdown(message, ix, is_streaming, cwd, markdown_selection, cx);
             let has_body = !message.text.trim().is_empty();
             v_flex()
                 .id(id)
@@ -3213,7 +3260,7 @@ impl Render for AiAssistantPanel {
                                             self.message_scroller.clone(),
                                             move |ix, window, cx| {
                                                 render_message_row(
-                                                    messages.get(ix).cloned(),
+                                                    messages.get(ix),
                                                     ix,
                                                     &row_context,
                                                     &panel,
@@ -4535,6 +4582,19 @@ mod tests {
         }
     }
 
+    struct MessageHarness(Entity<AiAssistantPanel>);
+
+    impl Render for MessageHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(gpui_kit::px(280.))
+                .h(gpui_kit::px(600.))
+                .relative()
+                .overflow_hidden()
+                .child(div().absolute().inset_0().child(self.0.clone()))
+        }
+    }
+
     #[gpui_kit::test]
     fn clicking_the_upper_composer_focuses_the_textarea(cx: &mut gpui_kit::TestAppContext) {
         cx.update(crate::init);
@@ -4578,6 +4638,61 @@ mod tests {
         assert!(
             focused,
             "clicking the upper half of {composer:?} should focus the textarea"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn long_user_messages_scroll_inside_a_capped_viewport(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(crate::init);
+        let slot = Rc::new(RefCell::new(None));
+        let panel_slot = slot.clone();
+        let (_root, cx) = cx.add_window_view(move |window, cx| {
+            let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+            let panel = cx.new(|cx| AiAssistantPanel::new(settings, window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.set_target(Some("web-01".into()), true, cx);
+                let text = (0..160)
+                    .map(|index| format!("line {index} with enough text to exercise wrapping"))
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                panel.messages_mut().push(Message {
+                    author: Author::User,
+                    text,
+                    time: None,
+                    images: Vec::new(),
+                    queue_position: None,
+                    markdown_view: Some(Rc::new(RefCell::new(
+                        crate::md::render::MarkdownView::new(),
+                    ))),
+                    thinking_tail: "".into(),
+                    tools: Vec::new(),
+                });
+                panel.sync_message_scroller(cx);
+                cx.notify();
+            });
+            *panel_slot.borrow_mut() = Some(panel.clone());
+            MessageHarness(panel)
+        });
+        let panel = slot.borrow().as_ref().unwrap().clone();
+        let (message_count, item_count) = cx.update(|_, cx| {
+            let panel = panel.read(cx);
+            (
+                panel.messages.len(),
+                panel.message_scroller.read(cx).item_count(),
+            )
+        });
+        assert_eq!(message_count, 1);
+        assert_eq!(item_count, 1);
+
+        for _ in 0..10 {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        let body = cx.update(|window, _| window.find("ai-user-message-body-0").bounds());
+        assert!(body.size.height > gpui_kit::px(0.));
+        assert!(
+            body.size.height <= gpui_kit::px(384.),
+            "a long sent prompt should be capped to Waku's 384px inner viewport: {body:?}"
         );
     }
 

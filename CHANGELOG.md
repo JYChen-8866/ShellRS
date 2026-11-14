@@ -4,7 +4,7 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
-## [0.1.22] - 2026-11-14
+## [0.1.23] - 2026-11-14
 
 ### Added
 
@@ -16,6 +16,7 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 - Packaged macOS builds now find Claude Code when it is installed in the usual user or Homebrew locations.
 - The macOS package build continues with an ad-hoc signature when Apple distribution credentials are unavailable.
+- Long sent user messages now scroll inside a capped bubble instead of making the transcript row page-tall.
 
 ## [0.1.19]
 
