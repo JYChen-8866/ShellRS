@@ -23,7 +23,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     diff::{Diff, DiffFile, DiffState},
     h_flex,
-    input::{Input, InputEvent, InputState, Textarea, TextareaState},
+    input::{Input, InputEvent, InputState},
     list::{List, ListDelegate, ListItem, ListState},
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     message_scroller::{MessageScroller, MessageScrollerState},
@@ -56,12 +56,25 @@ use crate::settings::{
 use crate::shared::open_image_preview;
 use crate::terminal::TerminalFont;
 use claude_codes::{ClaudeModel, MediaType};
+use markdown_editor::{
+    BlockEditorEvent, BlockEditorState, ClipboardPolicy, ImagePolicy, SubmitPolicy,
+    component::BlockEditor as MarkdownBlockEditor,
+};
 
 /// Keep provider chunks off the UI thread until a full presentation frame is
 /// due. Waku's streaming work showed that one commit per token can cost far
 /// more than the parsing itself; ~8 Hz keeps output responsive while bounding
 /// repaint, layout and markdown work.
 const AI_STREAM_COMMIT_INTERVAL: Duration = Duration::from_millis(120);
+
+fn is_send_shortcut(keystroke: &Keystroke) -> bool {
+    keystroke.key == "enter"
+        && keystroke.modifiers.control
+        && !keystroke.modifiers.alt
+        && !keystroke.modifiers.shift
+        && !keystroke.modifiers.platform
+        && !keystroke.modifiers.function
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Author {
@@ -177,7 +190,7 @@ impl Render for ThinkingSpinner {
 pub struct AiAssistantPanel {
     settings: Entity<SettingsStore>,
     host: Option<SharedString>,
-    input: Entity<TextareaState>,
+    input: Entity<BlockEditorState>,
     messages: Rc<Vec<Message>>,
     claude: Option<ClaudeBridge>,
     session_id: Option<Uuid>,
@@ -218,16 +231,25 @@ impl AiAssistantPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let ai = settings.read(cx).settings().ai;
+        let composer_scroll = ScrollHandle::new();
+        let input_scroll = composer_scroll.clone();
         let input = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .submit_on_enter(true)
-                .soft_wrap(true)
-                .auto_grow(3, 7)
+            let mut input = BlockEditorState::new(window, cx)
+                .with_submit_policy(SubmitPolicy::Newline)
+                .with_clipboard_policy(ClipboardPolicy::Host)
+                .with_image_policy(ImagePolicy::Placeholder);
+            input.set_scroll_handle(input_scroll);
+            input
         });
         let input_focus = input.read(cx).focus_handle(cx);
         let skill_panel = cx.weak_entity();
         let skill_keys = cx.intercept_keystrokes(move |event, window, cx| {
             if !input_focus.is_focused(window) {
+                return;
+            }
+            if is_send_shortcut(&event.keystroke) {
+                let _ = skill_panel.update(cx, |panel, cx| panel.send(window, cx));
+                cx.stop_propagation();
                 return;
             }
             let keystroke = event.keystroke.clone();
@@ -244,16 +266,40 @@ impl AiAssistantPanel {
             cx.subscribe_in(
                 &input,
                 window,
-                |this, _input, event: &InputEvent, window, cx| match event {
-                    InputEvent::Change => {
+                |this, _input, event: &BlockEditorEvent, window, cx| match event {
+                    BlockEditorEvent::Changed { .. } => {
                         this.skill_menu_index = 0;
                         this.skill_menu_dismissed = false;
                         this.skill_menu_scroll.scroll_to_item(0);
+                        cx.defer_in(window, move |this, _window, cx| {
+                            this.input.update(cx, |input, cx| input.reveal_caret(cx));
+                        });
                         cx.notify();
                     }
-                    InputEvent::PressEnter { shift: false, .. } => {
-                        cx.defer_in(window, |this, window, cx| this.send(window, cx));
+                    BlockEditorEvent::SelectionChanged => {
+                        this.sync_skill_trigger(cx);
+                        cx.notify();
                     }
+                    BlockEditorEvent::PasteRequested { request, item } => {
+                        let (handled, paths) = pasted_composer_attachments(item, window, cx);
+                        if !paths.is_empty() {
+                            for path in paths {
+                                if !this.attachments.contains(&path) {
+                                    this.attachments.push(path);
+                                }
+                            }
+                            cx.notify();
+                        }
+                        let text = (!handled).then(|| item.text()).flatten();
+                        let request = request.clone();
+                        cx.defer_in(window, move |this, _window, cx| {
+                            this.input.update(cx, |input, cx| {
+                                input.apply_paste(&request, text.as_deref(), cx);
+                            });
+                        });
+                    }
+                    BlockEditorEvent::LinkClicked { url } => cx.open_url(url.as_ref()),
+                    BlockEditorEvent::SubmitRequested => this.send(window, cx),
                     _ => {}
                 },
             ),
@@ -314,6 +360,20 @@ impl AiAssistantPanel {
         Rc::make_mut(&mut self.messages)
     }
 
+    fn input_source(&self, cx: &App) -> String {
+        self.input.read(cx).source()
+    }
+
+    fn set_input_source(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.input.update(cx, |input, cx| {
+            let _ = input.set_source(text, cx);
+        });
+    }
+
+    fn focus_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.input.update(cx, |input, cx| input.focus(window, cx));
+    }
+
     /// Point the assistant at `host` while `active`, the panel showing it.
     /// Switching tools or terminals only updates the host used by the next
     /// prompt; the conversation and its Claude worker stay alive until the
@@ -338,10 +398,8 @@ impl AiAssistantPanel {
     }
 
     fn detect_skill_trigger(&self, cx: &App) -> Option<SkillTrigger> {
-        let input = self.input.read(cx);
-        let value = input.value();
-        let caret = input.selected_range().end;
-        let before = value.get(..caret)?;
+        let before = self.input.read(cx).caret_prefix_snapshot()?;
+        let caret = before.len();
         let start = before
             .char_indices()
             .rev()
@@ -448,19 +506,18 @@ impl AiAssistantPanel {
         let Some(trigger) = self.skill_trigger.clone() else {
             return;
         };
-        let value = self.input.read(cx).value().to_string();
+        let value = self.input_source(cx);
         let insert = format!("/{slug} ");
         let end = trigger.range.end.min(value.len());
         let mut text = value[..trigger.range.start].to_string();
         text.push_str(&insert);
         text.push_str(&value[end..]);
-        let caret = trigger.range.start + insert.len();
         self.skill_trigger = None;
+        self.set_input_source(&text, cx);
         self.input.update(cx, |input, cx| {
-            input.set_value(text, window, cx);
-            input.set_selected_range(caret..caret, cx);
+            let _ = input.select_end(cx);
         });
-        self.input.update(cx, |input, cx| input.focus(window, cx));
+        self.focus_input(window, cx);
         cx.notify();
     }
 
@@ -478,7 +535,7 @@ impl AiAssistantPanel {
             self.insert_skill(&slug, window, cx);
             return;
         }
-        let text = self.input.read(cx).value().trim().to_string();
+        let text = self.input_source(cx).trim().to_string();
         if text.is_empty() && self.attachments.is_empty() {
             return;
         }
@@ -562,8 +619,7 @@ impl AiAssistantPanel {
         } else {
             text.clone()
         };
-        self.input
-            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.set_input_source("", cx);
         self.messages_mut().push(Message {
             author: Author::User,
             text: shown,
@@ -626,7 +682,7 @@ impl AiAssistantPanel {
             self.busy = true;
         }
         self.sync_message_scroller(cx);
-        self.input.update(cx, |input, cx| input.focus(window, cx));
+        self.focus_input(window, cx);
         cx.notify();
     }
 
@@ -668,7 +724,7 @@ impl AiAssistantPanel {
         } else {
             self.mark_next_queued_message_sent();
         }
-        self.input.update(cx, |input, cx| input.focus(window, cx));
+        self.focus_input(window, cx);
     }
 
     fn mark_next_queued_message_sent(&mut self) {
@@ -720,9 +776,8 @@ impl AiAssistantPanel {
         self.shift_queue_after_removal(position);
         self.pending_turns = self.pending_turns.saturating_sub(1);
         self.busy = self.pending_turns > 0;
-        self.input
-            .update(cx, |input, cx| input.set_value(message.text, window, cx));
-        self.input.update(cx, |input, cx| input.focus(window, cx));
+        self.set_input_source(&message.text, cx);
+        self.focus_input(window, cx);
         self.sync_message_scroller(cx);
         cx.notify();
     }
@@ -1131,7 +1186,7 @@ impl AiAssistantPanel {
         if let Some(claude) = &self.claude {
             let _ = claude.permissions.try_send(decision);
         }
-        self.input.update(cx, |input, cx| input.focus(window, cx));
+        self.focus_input(window, cx);
         cx.notify();
     }
 
@@ -1405,8 +1460,9 @@ impl AiAssistantPanel {
     }
 
     fn render_composer(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let input_empty = self.input.read(cx).value().trim().is_empty();
-        let show_placeholder = self.input.read(cx).value().is_empty();
+        let input_text = self.input_source(cx);
+        let input_empty = input_text.trim().is_empty();
+        let show_placeholder = input_text.is_empty();
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
         let placeholder = t!("ai.composer.placeholder");
         let empty = input_empty && self.attachments.is_empty();
@@ -1424,7 +1480,6 @@ impl AiAssistantPanel {
         let skill_menu = self.render_skill_menu_overlay(cx);
         let bounds_cell = self.skill_menu_bounds.clone();
         let cwd = self.current_cwd(cx);
-        let paste_panel = cx.entity();
         let context_meter = context_meter(self.context_usage, cx);
 
         let toolbar = h_flex()
@@ -1581,14 +1636,16 @@ impl AiAssistantPanel {
                                 )
                             })
                             .child(
-                                Textarea::new(&self.input)
-                                    .appearance(false)
-                                    .bordered(false)
+                                div()
+                                    .id("ai-composer-editor")
+                                    .test_support()
                                     .aria_label(placeholder)
                                     .w_full()
-                                    .on_paste(move |item, window, cx| {
-                                        paste_composer_attachments(&paste_panel, item, window, cx)
-                                    }),
+                                    .child(
+                                        MarkdownBlockEditor::new(&self.input)
+                                            .auto_grow(3, 7)
+                                            .toolbar(false),
+                                    ),
                             ),
                     ),
             )
@@ -3500,12 +3557,11 @@ fn render_composer_attachment(
     }
 }
 
-fn paste_composer_attachments(
-    panel: &Entity<AiAssistantPanel>,
+fn pasted_composer_attachments(
     item: &ClipboardItem,
     window: &mut Window,
     cx: &mut App,
-) -> bool {
+) -> (bool, Vec<PathBuf>) {
     let mut handled = false;
     let mut paths = Vec::new();
     for entry in item.entries() {
@@ -3526,17 +3582,7 @@ fn paste_composer_attachments(
             ClipboardEntry::String(_) => {}
         }
     }
-    if !paths.is_empty() {
-        panel.update(cx, |panel, cx| {
-            for path in paths {
-                if !panel.attachments.contains(&path) {
-                    panel.attachments.push(path);
-                }
-            }
-            cx.notify();
-        });
-    }
-    handled
+    (handled, paths)
 }
 
 fn save_pasted_image(image: &Image) -> Result<PathBuf, SharedString> {
@@ -4286,8 +4332,8 @@ mod tests {
     use super::{
         AiAssistantPanel, Author, ClaudeEvent, Message, ToolCall, ToolStatus, append_tool_call,
         claude_media_type, coalesce_claude_events, decode_data_image, format_tokens,
-        image_format_for_path, is_image_path, sniff_image_format, streaming_tail, tool_file_change,
-        tool_group_title, tool_input_text, tool_summary, tool_title_key,
+        image_format_for_path, is_image_path, is_send_shortcut, sniff_image_format, streaming_tail,
+        tool_file_change, tool_group_title, tool_input_text, tool_summary, tool_title_key,
     };
     use claude_codes::MediaType;
     use gpui_kit::{AppContext as _, Context, ImageFormat, IntoElement, Render, Window, div};
@@ -4300,6 +4346,21 @@ mod tests {
         assert_eq!(format_tokens(1_500), "1.5K");
         assert_eq!(format_tokens(200_000), "200.0K");
         assert_eq!(format_tokens(1_000_000), "1.0M");
+    }
+
+    #[test]
+    fn only_control_enter_is_the_send_shortcut() {
+        let keystroke = |key: &str, control: bool| gpui_kit::Keystroke {
+            key: key.to_owned(),
+            modifiers: gpui_kit::Modifiers {
+                control,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(is_send_shortcut(&keystroke("enter", true)));
+        assert!(!is_send_shortcut(&keystroke("enter", false)));
+        assert!(!is_send_shortcut(&keystroke("space", true)));
     }
 
     #[test]
@@ -4601,7 +4662,7 @@ mod tests {
                 panel.busy = true;
 
                 panel.edit_queued_message(1, window, cx);
-                assert_eq!(panel.input.read(cx).value().as_ref(), "first");
+                assert_eq!(panel.input.read(cx).source().as_str(), "first");
                 assert_eq!(panel.pending_turns, 2);
                 assert_eq!(panel.messages.len(), 1);
                 assert_eq!(panel.messages[0].queue_position, Some(1));

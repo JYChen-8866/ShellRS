@@ -64,6 +64,7 @@ gpui-kit = { version = "0.9.1", features = [
     "tree-sitter-typescript",
     "tree-sitter-yaml",
 ] }
+gpui-kit-markdown-editor = { path = "vendor/gpui-kit-markdown-editor", default-features = false }
 alacritty_terminal = "0.26"
 # Claude Code's JSON-lines protocol, driven directly against the local
 # `claude` CLI. No Node or ACP adapter process is needed.

@@ -173,6 +173,48 @@ async fn pasted_image_appears_as_a_thumbnail_attachment(cx: &mut TestAppContext)
 }
 
 #[gpui_kit::test]
+fn enter_at_the_last_line_grows_the_composer_immediately(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("tool-ai", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("ai-composer", cx);
+        window.input("one\ntwo\nthree", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let before = cx
+        .update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.find("ai-composer").bounds().size.height
+        })
+        .unwrap();
+
+    cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    let after = cx
+        .update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.find("ai-composer").bounds().size.height
+        })
+        .unwrap();
+    assert!(
+        after > before,
+        "Enter on the last line should grow the composer immediately: {before:?} -> {after:?}"
+    );
+}
+
+#[gpui_kit::test]
 fn the_composer_placeholder_wraps_with_the_panel_width(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
 
