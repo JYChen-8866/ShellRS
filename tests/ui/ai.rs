@@ -212,12 +212,12 @@ fn shift_enter_at_the_last_line_grows_the_composer_immediately(cx: &mut TestAppC
         .unwrap();
     assert!(
         after > before,
-        "Shift+Enter on the last line should grow the composer immediately: {before:?} -> {after:?}"
+        "Shift+Enter on the last line should grow the Markdown editor immediately: {before:?} -> {after:?}"
     );
 }
 
 #[gpui_kit::test]
-fn the_composer_placeholder_wraps_with_the_panel_width(cx: &mut TestAppContext) {
+fn the_markdown_editor_stays_above_the_floating_controls(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
 
     cx.update_window(handle.into(), |_, window, cx| {
@@ -244,24 +244,32 @@ fn the_composer_placeholder_wraps_with_the_panel_width(cx: &mut TestAppContext) 
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        let placeholder = window.find("ai-composer-placeholder");
-        assert!(placeholder.visible());
-        assert!(
-            placeholder.bounds().size.height > px(24.),
-            "the placeholder should wrap past one line: {:?}",
-            placeholder.bounds()
-        );
+        assert!(window.find("ai-composer-placeholder").visible());
+        let editor = window.find("ai-composer-editor");
+        assert!(editor.visible());
+        assert!(editor.bounds().size.height > px(24.));
         let controls_top = ["ai-attach", "ai-confirmation", "ai-model", "ai-send"]
             .into_iter()
             .filter_map(|id| window.try_find(id).map(|control| control.bounds().top()))
             .min()
             .expect("the composer controls should be visible");
         assert!(
-            placeholder.bounds().bottom() <= controls_top,
-            "the placeholder should stay above the floating controls: {:?} {controls_top:?}",
-            placeholder.bounds()
+            editor.bounds().bottom() <= controls_top,
+            "the editor should stay above the floating controls: {:?} {controls_top:?}",
+            editor.bounds()
         );
         window.click("ai-composer", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("ai-composer-editor").visible());
+        assert!(
+            window.try_find("ai-composer-placeholder").is_none(),
+            "the focused editor must not draw placeholder text under the caret"
+        );
         window.input("hello", cx);
     })
     .unwrap();
@@ -269,7 +277,7 @@ fn the_composer_placeholder_wraps_with_the_panel_width(cx: &mut TestAppContext) 
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find("ai-composer-placeholder").is_none());
+        assert!(window.find("ai-composer-editor").visible());
     })
     .unwrap();
 }

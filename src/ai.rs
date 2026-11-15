@@ -23,7 +23,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     diff::{Diff, DiffFile, DiffState},
     h_flex,
-    input::{Input, InputEvent, InputState, Textarea, TextareaState},
+    input::{Editor, EditorState, Input, InputEvent, InputState},
     list::{List, ListDelegate, ListItem, ListState},
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     message_scroller::{MessageScroller, MessageScrollerState},
@@ -69,6 +69,15 @@ const QUEUED_MESSAGE_ACTIONS_MIN_WIDTH: f32 = 10.5;
 /// block tree must be remeasured whenever the sidebar width moves.
 const USER_MESSAGE_MAX_HEIGHT: f32 = 25.0;
 const USER_MESSAGE_VIEWPORT_MAX_HEIGHT: f32 = 24.0;
+const COMPOSER_MIN_ROWS: usize = 3;
+const COMPOSER_MAX_ROWS: usize = 7;
+
+fn prompt_rows(source: &str) -> usize {
+    source
+        .split('\n')
+        .count()
+        .clamp(COMPOSER_MIN_ROWS, COMPOSER_MAX_ROWS)
+}
 
 fn is_send_shortcut(keystroke: &Keystroke) -> bool {
     keystroke.key == "enter"
@@ -193,7 +202,8 @@ impl Render for ThinkingSpinner {
 pub struct AiAssistantPanel {
     settings: Entity<SettingsStore>,
     host: Option<SharedString>,
-    input: Entity<TextareaState>,
+    input: Entity<EditorState>,
+    input_rows: usize,
     messages: Rc<Vec<Message>>,
     claude: Option<ClaudeBridge>,
     session_id: Option<Uuid>,
@@ -235,10 +245,14 @@ impl AiAssistantPanel {
     ) -> Self {
         let ai = settings.read(cx).settings().ai;
         let input = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .submit_on_enter(false)
+            EditorState::new(window, cx)
+                .language("markdown")
+                .line_number(false)
+                .folding(false)
                 .soft_wrap(true)
-                .auto_grow(3, 7)
+                .auto_close(false)
+                .smart_indent(false)
+                .searchable(false)
         });
         let input_focus = input.read(cx).focus_handle(cx);
         let skill_panel = cx.weak_entity();
@@ -265,13 +279,23 @@ impl AiAssistantPanel {
             cx.subscribe_in(
                 &input,
                 window,
-                |this, _input, event: &InputEvent, _window, cx| {
-                    if let InputEvent::Change = event {
+                |this, _input, event: &InputEvent, _window, cx| match event {
+                    InputEvent::Change => {
+                        let value = this.input.read(cx).value();
+                        this.set_input_rows(prompt_rows(&value), cx);
+                        if value.is_empty() {
+                            this.input.update(cx, |input, cx| {
+                                input.set_scroll_offset(point(px(0.), px(0.)), cx)
+                            });
+                        }
+                        this.sync_skill_trigger(cx);
                         this.skill_menu_index = 0;
                         this.skill_menu_dismissed = false;
                         this.skill_menu_scroll.scroll_to_item(0);
                         cx.notify();
                     }
+                    InputEvent::Focus | InputEvent::Blur => cx.notify(),
+                    InputEvent::PressEnter { .. } => {}
                 },
             ),
             cx.observe_in(&settings, window, |this, settings, _window, cx| {
@@ -293,6 +317,7 @@ impl AiAssistantPanel {
             settings,
             host: None,
             input,
+            input_rows: COMPOSER_MIN_ROWS,
             messages: Rc::new(Vec::new()),
             claude: None,
             session_id: None,
@@ -336,8 +361,22 @@ impl AiAssistantPanel {
     }
 
     fn set_input_source(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.input
-            .update(cx, |input, cx| input.set_value(text, window, cx));
+        self.set_input_rows(prompt_rows(text), cx);
+        self.input.update(cx, |input, cx| {
+            input.set_value(text, window, cx);
+            let caret = input.value().len();
+            input.set_selected_range(caret..caret, cx);
+            if text.is_empty() {
+                input.set_scroll_offset(point(px(0.), px(0.)), cx);
+            }
+        });
+    }
+
+    fn set_input_rows(&mut self, rows: usize, cx: &mut Context<Self>) {
+        if rows != self.input_rows {
+            self.input_rows = rows;
+            cx.notify();
+        }
     }
 
     fn focus_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -486,10 +525,9 @@ impl AiAssistantPanel {
         text.push_str(&value[end..]);
         let caret = trigger.range.start + insert.len();
         self.skill_trigger = None;
-        self.input.update(cx, |input, cx| {
-            input.set_value(text, window, cx);
-            input.set_selected_range(caret..caret, cx);
-        });
+        self.set_input_source(&text, window, cx);
+        self.input
+            .update(cx, |input, cx| input.set_selected_range(caret..caret, cx));
         self.focus_input(window, cx);
         cx.notify();
     }
@@ -1435,8 +1473,11 @@ impl AiAssistantPanel {
     fn render_composer(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let input_text = self.input_source(cx);
         let input_empty = input_text.trim().is_empty();
-        let show_placeholder = input_text.is_empty();
-        let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
+        let input_focus = self.input.read(cx).focus_handle(cx);
+        let focused = input_focus.is_focused(window);
+        let show_placeholder = input_text.is_empty() && !focused;
+        let editor_height =
+            px(cx.theme().mono_font_size.as_f32() * (1.5 * self.input_rows as f32) + 16.);
         let placeholder = t!("ai.composer.placeholder");
         let empty = input_empty && self.attachments.is_empty();
         let busy = self.busy;
@@ -1586,6 +1627,8 @@ impl AiAssistantPanel {
                     .pb(rems(3.5))
                     .child(
                         div()
+                            .id("ai-composer-editor")
+                            .test_support()
                             .relative()
                             .w_full()
                             .when(show_placeholder, |this| {
@@ -1597,23 +1640,22 @@ impl AiAssistantPanel {
                                         .top_0()
                                         .left_0()
                                         .right_0()
-                                        // Match the textarea's `Size::Medium` text
-                                        // inset, plus the 10px its text element
-                                        // reserves on the right before wrapping.
-                                        .pl(px(10.))
-                                        .pr(px(20.))
+                                        .pl(px(6.))
+                                        .pr(px(10.))
                                         .pt(px(8.))
-                                        .text_sm()
-                                        .line_height(rems(1.25))
+                                        .font_family(cx.theme().mono_font_family.clone())
+                                        .text_size(cx.theme().mono_font_size)
+                                        .line_height(relative(1.5))
                                         .text_color(cx.theme().muted_foreground)
                                         .child(placeholder.clone()),
                                 )
                             })
                             .child(
-                                Textarea::new(&self.input)
+                                Editor::new(&self.input)
                                     .appearance(false)
                                     .bordered(false)
                                     .aria_label(placeholder)
+                                    .h(editor_height)
                                     .w_full()
                                     .on_paste(move |item, window, cx| {
                                         paste_composer_attachments(&paste_panel, item, window, cx)
@@ -3216,7 +3258,7 @@ impl Render for AiAssistantPanel {
                                 cx.listener(|this, _, window, cx| {
                                     // The composer is an absolute child of this
                                     // content area. A click inside it already
-                                    // focuses the Textarea, so do not let the
+                                    // focuses the Markdown editor, so do not let the
                                     // message-area fallback steal that focus.
                                     if !this.input.read(cx).focus_handle(cx).is_focused(window) {
                                         window.focus(&this.focus_handle, cx);
@@ -4596,7 +4638,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn clicking_the_upper_composer_focuses_the_textarea(cx: &mut gpui_kit::TestAppContext) {
+    fn clicking_the_upper_composer_focuses_the_markdown_editor(cx: &mut gpui_kit::TestAppContext) {
         cx.update(crate::init);
         let slot = Rc::new(RefCell::new(None));
         let panel_slot = slot.clone();
@@ -4637,7 +4679,89 @@ mod tests {
         });
         assert!(
             focused,
-            "clicking the upper half of {composer:?} should focus the textarea"
+            "clicking the upper half of {composer:?} should focus the Markdown editor"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn composer_uses_a_markdown_source_editor(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(crate::init);
+        let slot = Rc::new(RefCell::new(None));
+        let panel_slot = slot.clone();
+        let (_root, visual) = cx.add_window_view(move |window, cx| {
+            let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+            let panel = cx.new(|cx| AiAssistantPanel::new(settings, window, cx));
+            *panel_slot.borrow_mut() = Some(panel);
+            Probe
+        });
+        let panel = slot.borrow_mut().take().unwrap();
+        let source = "# Request\n\n**literal Markdown**";
+        visual.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.set_input_source(source, window, cx));
+        });
+
+        assert_eq!(
+            visual.update(|_, cx| panel.read(cx).input_source(cx)),
+            source
+        );
+        assert_eq!(
+            visual.update(|_, cx| panel.read(cx).input.read(cx).language_name()),
+            "markdown"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn clearing_a_long_prompt_returns_the_editor_to_the_top(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(crate::init);
+        let slot = Rc::new(RefCell::new(None));
+        let panel_slot = slot.clone();
+        let (_root, visual) = cx.add_window_view(move |window, cx| {
+            let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+            let panel = cx.new(|cx| AiAssistantPanel::new(settings, window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.set_target(Some("web-01".into()), true, cx)
+            });
+            *panel_slot.borrow_mut() = Some(panel.clone());
+            ComposerFocusHarness(panel)
+        });
+        let panel = slot.borrow_mut().take().unwrap();
+        for _ in 0..5 {
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        let composer = visual.update(|window, _| window.find("ai-composer").bounds());
+        let at = gpui_kit::point(composer.center().x, composer.top() + gpui_kit::px(16.));
+        visual.simulate_click(at, Default::default());
+
+        let long_prompt = (0..20)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        visual.update(|window, cx| window.input(&long_prompt, cx));
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let before = visual.update(|_, cx| panel.read(cx).input.read(cx).scroll_offset());
+        assert!(
+            before.y < gpui_kit::px(0.),
+            "the long prompt should scroll the editor to its caret: {before:?}"
+        );
+
+        visual.update(|window, cx| {
+            window.press("secondary-a", cx);
+            window.press("backspace", cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+
+        let (value, after) = visual.update(|_, cx| {
+            let input = panel.read(cx).input.read(cx);
+            (input.value().to_string(), input.scroll_offset())
+        });
+        assert!(value.is_empty());
+        assert_eq!(
+            after.y,
+            gpui_kit::px(0.),
+            "clearing the prompt should return to line one"
         );
     }
 
