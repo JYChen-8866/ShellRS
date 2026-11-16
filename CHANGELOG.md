@@ -4,12 +4,14 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
-## [0.1.24] - 2026-11-16
+## [0.1.25] - 2026-11-17
 
 ### Fixed
 
 - Windows AI chat now starts Claude Code installed through npm or the native installer. ShellRS prefers `claude.exe` and runs npm's `claude.cmd` shim through `cmd.exe`, instead of failing with “not a valid Win32 application”.
 - The AI composer now uses gpui-kit's Markdown source editor, grows from three to seven rows, hides its placeholder when focused, returns to the first line after clearing, and keeps long prompts inside the input area.
+- Images attached to or sent from the AI composer now load correctly on Windows instead of being mistaken for URL schemes.
+- The expanded AI composer now has an opaque background and captures pointer events across its whole surface, so message text no longer shows or responds through it.
 
 ## [0.1.23] - 2026-11-14
 
