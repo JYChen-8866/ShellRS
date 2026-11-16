@@ -1592,8 +1592,9 @@ impl AiAssistantPanel {
             .rounded(cx.theme().radius)
             .border_1()
             .border_color(cx.theme().input)
-            .bg(cx.theme().input_background())
+            .bg(cx.theme().input_background().opacity(1.0))
             .shadow_sm()
+            .occlude()
             .when(focused, |this| this.focus_ring_style(window, cx))
             .child(
                 canvas(
@@ -1631,6 +1632,10 @@ impl AiAssistantPanel {
                             .test_support()
                             .relative()
                             .w_full()
+                            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                input_focus.focus(window, cx);
+                                cx.stop_propagation();
+                            })
                             .when(show_placeholder, |this| {
                                 this.child(
                                     div()
@@ -2067,7 +2072,7 @@ fn render_message_row(
                             )
                         })
                         .child(
-                            img(markdown_image_source(&path.to_string_lossy(), cwd))
+                            img(ImageSource::from(path.clone()))
                                 .object_fit(ObjectFit::Contain)
                                 .max_w(rems(18.))
                                 .max_h(rems(12.))
@@ -3565,7 +3570,7 @@ fn render_composer_attachment(
             .overflow_hidden()
             .tooltip(move |window, cx| Tooltip::new(tooltip_name.clone()).build(window, cx))
             .child(
-                img(markdown_image_source(&path.to_string_lossy(), cwd))
+                img(ImageSource::from(path.to_path_buf()))
                     .id(SharedString::from(format!("ai-attachment-image-{ix}")))
                     .size_full()
                     .object_fit(ObjectFit::Cover)
@@ -3868,11 +3873,11 @@ pub(crate) fn read_ai_image_file(path: &Path) -> Option<Image> {
 }
 
 fn local_image_path(url: &str, cwd: &Path) -> Option<PathBuf> {
-    if let Ok(parsed) = url::Url::parse(url) {
-        if parsed.scheme() != "file" {
-            return None;
-        }
-        return parsed.to_file_path().ok();
+    if url
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file:"))
+    {
+        return url::Url::parse(url).ok()?.to_file_path().ok();
     }
     if let Some(rest) = url.strip_prefix("~/") {
         return dirs::home_dir().map(|home| home.join(rest));
@@ -4414,8 +4419,8 @@ mod tests {
     use super::{
         AiAssistantPanel, Author, ClaudeEvent, Message, ToolCall, ToolStatus, append_tool_call,
         claude_media_type, coalesce_claude_events, decode_data_image, format_tokens,
-        image_format_for_path, is_image_path, sniff_image_format, streaming_tail, tool_file_change,
-        tool_group_title, tool_input_text, tool_summary, tool_title_key,
+        image_format_for_path, is_image_path, local_image_path, sniff_image_format, streaming_tail,
+        tool_file_change, tool_group_title, tool_input_text, tool_summary, tool_title_key,
     };
     use claude_codes::MediaType;
     use gpui_kit::test::TestWindowExt as _;
@@ -4469,6 +4474,16 @@ mod tests {
             Some(ImageFormat::Png)
         );
         assert_eq!(sniff_image_format(b"not an image"), None);
+    }
+
+    #[test]
+    fn windows_drive_letters_are_paths_not_url_schemes() {
+        let cwd = Path::new("/workspace");
+        let path = local_image_path(r"C:\Users\me\shot.png", cwd).unwrap();
+        #[cfg(windows)]
+        assert_eq!(path, std::path::PathBuf::from(r"C:\Users\me\shot.png"));
+        #[cfg(not(windows))]
+        assert_eq!(path, cwd.join(r"C:\Users\me\shot.png"));
     }
 
     #[test]
@@ -4647,13 +4662,11 @@ mod tests {
             let panel = cx.new(|cx| AiAssistantPanel::new(settings, window, cx));
             panel.update(cx, |panel, cx| {
                 panel.set_target(Some("web-01".into()), true, cx);
-                panel.input.update(cx, |input, cx| {
-                    let source = (0..20)
-                        .map(|i| format!("line {i}"))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    input.set_value(source, window, cx);
-                });
+                let source = (0..20)
+                    .map(|i| format!("line {i}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                panel.set_input_source(&source, window, cx);
             });
             *panel_slot.borrow_mut() = Some(panel.clone());
             ComposerFocusHarness(panel)
@@ -4666,8 +4679,8 @@ mod tests {
         for _ in 0..5 {
             draw(cx);
         }
-        let composer = cx.update(|window, _| window.find("ai-composer").bounds());
-        let at = gpui_kit::point(composer.center().x, composer.top() + gpui_kit::px(16.));
+        let editor = cx.update(|window, _| window.find("ai-composer-editor").bounds());
+        let at = gpui_kit::point(editor.center().x, editor.bottom() - gpui_kit::px(8.));
         cx.simulate_click(at, Default::default());
         let focused = cx.update(|window, cx| {
             panel
@@ -4679,7 +4692,7 @@ mod tests {
         });
         assert!(
             focused,
-            "clicking the upper half of {composer:?} should focus the Markdown editor"
+            "clicking the expanded composer should focus the editor instead of reaching messages behind it"
         );
     }
 
