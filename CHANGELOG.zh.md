@@ -4,6 +4,13 @@
 
 每个版本一节，标题写成 `## [版本号]`，可以在后面加日期。每一节同时写中文（这里）和英文（[CHANGELOG.md](CHANGELOG.md)），在同一次提交里。发布流程（`.github/workflows/release.yml`）把英文版里与 tag 同版本的那一节原样作为 GitHub Release 的说明；官网的更新日志英文和日文页显示英文版，中文页显示这一份（ShellRS 的更新对话框用「查看更新内容」打开官网的更新日志）。用 Markdown 书写，面向使用者。
 
+## [0.1.24] - 2026-11-16
+
+### 修复
+
+- 修复 Windows 上 AI 聊天无法启动通过 npm 或原生安装程序安装的 Claude Code 的问题。ShellRS 现在优先使用 `claude.exe`，并通过 `cmd.exe` 运行 npm 的 `claude.cmd`，不再报「不是有效的 Win32 应用程序」。
+- AI 输入框改用 gpui-kit 的 Markdown 源码编辑器：输入区在 3 到 7 行之间自动增高，聚焦时隐藏占位符，清空后回到第一行，长提示词不会再撑出输入区域。
+
 ## [0.1.23] - 2026-11-14
 
 ### 新增
