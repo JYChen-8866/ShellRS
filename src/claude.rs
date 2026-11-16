@@ -1,6 +1,7 @@
-//! Claude Code through its local CLI's JSON-lines protocol. The Rust SDK
-//! starts the installed `claude` binary directly; there is no Node, npm
-//! package or ACP adapter to install.
+//! Claude Code through its local CLI's JSON-lines protocol. There is no ACP
+//! adapter to install. Unix starts the installed `claude` executable directly;
+//! Windows runs npm's `claude.cmd` shim through `cmd.exe` when no native
+//! `claude.exe` is available.
 
 use std::{
     ffi::OsString,
@@ -133,6 +134,16 @@ fn claude_search_paths() -> Vec<PathBuf> {
         }
     }
 
+    #[cfg(windows)]
+    {
+        if let Some(app_data) = dirs::config_dir() {
+            paths.push(app_data.join("npm"));
+        }
+        if let Some(local_app_data) = dirs::data_local_dir() {
+            paths.push(local_app_data.join("Programs").join("claude"));
+        }
+    }
+
     paths.extend([
         PathBuf::from("/opt/homebrew/bin"),
         PathBuf::from("/usr/local/bin"),
@@ -154,19 +165,88 @@ fn claude_search_paths() -> Vec<PathBuf> {
 
 fn find_in_paths(paths: &[PathBuf], name: &str) -> Option<PathBuf> {
     paths.iter().find_map(|directory| {
-        let candidate = directory.join(name);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
         if cfg!(windows) {
             ["exe", "cmd", "bat"].iter().find_map(|extension| {
                 let candidate = directory.join(format!("{name}.{extension}"));
                 candidate.is_file().then_some(candidate)
             })
         } else {
-            None
+            let candidate = directory.join(name);
+            candidate.is_file().then_some(candidate)
         }
     })
+}
+
+#[cfg(windows)]
+fn windows_batch_command(command: tokio::process::Command) -> tokio::process::Command {
+    use std::os::windows::process::CommandExt as _;
+
+    // CreateProcess cannot execute npm's `.cmd` shims directly. The extensionless
+    // `claude` file in the same folder is a Unix shell script and fails with
+    // ERROR_BAD_EXE_FORMAT (193), so both lookup order and this wrapper matter.
+    let program = command.as_std().get_program().to_os_string();
+    let extension = Path::new(&program)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    if !matches!(extension.as_deref(), None | Some("cmd") | Some("bat")) {
+        return command;
+    }
+
+    let args = command
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_os_string())
+        .collect::<Vec<_>>();
+    let current_dir = command.as_std().get_current_dir().map(Path::to_path_buf);
+    let envs = command
+        .as_std()
+        .get_envs()
+        .map(|(key, value)| (key.to_os_string(), value.map(|value| value.to_os_string())))
+        .collect::<Vec<_>>();
+    let command_line = windows_batch_command_line(&program, &args);
+    let shell = std::env::var_os("COMSPEC").unwrap_or_else(|| OsString::from("cmd.exe"));
+    let mut wrapped = tokio::process::Command::new(shell);
+    wrapped
+        .arg("/D")
+        .arg("/S")
+        .arg("/C")
+        .raw_arg(command_line)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    if let Some(current_dir) = current_dir {
+        wrapped.current_dir(current_dir);
+    }
+    for (key, value) in envs {
+        match value {
+            Some(value) => {
+                wrapped.env(key, value);
+            }
+            None => {
+                wrapped.env_remove(key);
+            }
+        }
+    }
+    wrapped
+}
+
+#[cfg(windows)]
+fn windows_batch_command_line(program: &std::ffi::OsStr, args: &[OsString]) -> OsString {
+    fn quote(arg: &std::ffi::OsStr) -> String {
+        let arg = arg.to_string_lossy();
+        format!("\"{}\"", arg.replace('"', "\"\""))
+    }
+
+    let mut line = String::from("\"");
+    line.push_str(&quote(program));
+    for arg in args {
+        line.push(' ');
+        line.push_str(&quote(arg));
+    }
+    line.push('"');
+    line.into()
 }
 
 /// Run one Claude CLI session on a worker thread, with its own small Tokio
@@ -266,6 +346,8 @@ async fn run(
         .map_err(|error| t!("ai.claude.spawn_failed", error = error).to_string())?;
     command.arg("--include-partial-messages");
     command.env("PATH", claude_process_path());
+    #[cfg(windows)]
+    let command = windows_batch_command(command);
     let child = command
         .spawn()
         .map_err(|error| t!("ai.claude.spawn_failed", error = error).to_string())?;
@@ -618,6 +700,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn command_lookup_searches_augmented_gui_paths() {
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
@@ -626,6 +709,41 @@ mod tests {
 
         let paths = vec![first.path().to_path_buf(), second.path().to_path_buf()];
         assert_eq!(find_in_paths(&paths, "claude"), Some(command));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn command_lookup_prefers_windows_executables_over_npm_shell_shims() {
+        let folder = tempfile::tempdir().unwrap();
+        for name in ["claude", "claude.cmd", "claude.exe"] {
+            std::fs::write(folder.path().join(name), b"fake").unwrap();
+        }
+        let paths = vec![folder.path().to_path_buf()];
+        assert_eq!(
+            find_in_paths(&paths, "claude"),
+            Some(folder.path().join("claude.exe"))
+        );
+
+        std::fs::remove_file(folder.path().join("claude.exe")).unwrap();
+        assert_eq!(
+            find_in_paths(&paths, "claude"),
+            Some(folder.path().join("claude.cmd"))
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_batch_command_line_quotes_the_npm_shim_and_its_arguments() {
+        let line = windows_batch_command_line(
+            std::ffi::OsStr::new(r"C:\Program Files\nodejs\claude.cmd"),
+            &[OsString::from("--print"), OsString::from("hello world")],
+        );
+        assert_eq!(
+            line,
+            OsString::from(
+                "\"\"C:\\Program Files\\nodejs\\claude.cmd\" \"--print\" \"hello world\"\""
+            )
+        );
     }
 
     #[test]
