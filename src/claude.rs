@@ -179,8 +179,6 @@ fn find_in_paths(paths: &[PathBuf], name: &str) -> Option<PathBuf> {
 
 #[cfg(windows)]
 fn windows_batch_command(command: tokio::process::Command) -> tokio::process::Command {
-    use std::os::windows::process::CommandExt as _;
-
     // CreateProcess cannot execute npm's `.cmd` shims directly. The extensionless
     // `claude` file in the same folder is a Unix shell script and fails with
     // ERROR_BAD_EXE_FORMAT (193), so both lookup order and this wrapper matter.
@@ -347,7 +345,7 @@ async fn run(
     command.arg("--include-partial-messages");
     command.env("PATH", claude_process_path());
     #[cfg(windows)]
-    let command = windows_batch_command(command);
+    let mut command = windows_batch_command(command);
     let child = command
         .spawn()
         .map_err(|error| t!("ai.claude.spawn_failed", error = error).to_string())?;
