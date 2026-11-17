@@ -138,9 +138,42 @@ async fn pasted_image_appears_as_a_thumbnail_attachment(cx: &mut TestAppContext)
     .unwrap();
     cx.run_until_parked();
 
+    let attachment_area = cx
+        .update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("ai-attachment-0").visible());
+            let attachment_area = window.find("ai-composer-attachments").bounds();
+            window.click("ai-empty", cx);
+            attachment_area
+        })
+        .unwrap();
+    cx.run_until_parked();
+
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find("ai-attachment-0").visible());
+        assert!(
+            window.find("ai-composer-placeholder").visible(),
+            "clicking the chat area should move focus out of the composer"
+        );
+        click_at(
+            window,
+            point(
+                attachment_area.right() - px(6.),
+                attachment_area.top() + px(6.),
+            ),
+            gpui_kit::Modifiers::none(),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("ai-composer-placeholder").is_none(),
+            "clicking the attachment row's empty area should focus the composer instead of passing through"
+        );
         window.click("ai-attachment-image-0", cx);
     })
     .unwrap();

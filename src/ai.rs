@@ -1495,6 +1495,7 @@ impl AiAssistantPanel {
         let bounds_cell = self.skill_menu_bounds.clone();
         let cwd = self.current_cwd(cx);
         let paste_panel = cx.entity();
+        let attachment_focus = input_focus.clone();
         let context_meter = context_meter(self.context_usage, cx);
 
         let toolbar = h_flex()
@@ -1592,7 +1593,7 @@ impl AiAssistantPanel {
             .rounded(cx.theme().radius)
             .border_1()
             .border_color(cx.theme().input)
-            .bg(cx.theme().input_background().opacity(1.0))
+            .bg(cx.theme().input_background().alpha(1.0))
             .shadow_sm()
             .occlude()
             .when(focused, |this| this.focus_ring_style(window, cx))
@@ -1608,11 +1609,18 @@ impl AiAssistantPanel {
                 let panel = cx.entity();
                 composer.child(
                     h_flex()
+                        .id("ai-composer-attachments")
+                        .test_support()
                         .w_full()
                         .flex_wrap()
                         .gap_1()
                         .px_3()
                         .pt_2()
+                        .occlude()
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            attachment_focus.focus(window, cx);
+                            cx.stop_propagation();
+                        })
                         .children(attachments.iter().enumerate().map(|(ix, path)| {
                             render_composer_attachment(ix, path, &cwd, panel.clone(), cx)
                         })),
