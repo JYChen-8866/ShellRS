@@ -1052,6 +1052,10 @@ fn the_tool_switch_shows_a_tool_and_hides_it_again(cx: &mut TestAppContext) {
         // Hidden at first: the switch is there, none of it pressed.
         assert!(window.try_find(sidebar).is_none());
         assert_eq!(window.find("tool-snippets").checked(), Some(false));
+        assert_eq!(window.find("tool-quiet-md").label(), Some("Quiet.md"));
+        let quiet_md = window.find("tool-quiet-md").bounds();
+        let switch = window.find("tool-switch").bounds();
+        assert!(quiet_md.bottom() <= switch.bottom());
     });
 
     in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));

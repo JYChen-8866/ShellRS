@@ -7,6 +7,7 @@ mod computer;
 #[cfg(target_os = "macos")]
 mod menu_bar;
 mod paths;
+mod quiet_md;
 mod quit;
 mod rendering;
 mod shortcuts;
@@ -26,6 +27,7 @@ pub use paths::{
     compose_history_path, data_dir, database_path, keys_dir, portable_root, settings_path,
     terminal_output_dir, updates_dir, window_state_path,
 };
+pub use quiet_md::open_quiet_md;
 pub use quit::{quit_held_back, set_quit_guard};
 pub use rendering::{SOFTWARE_FRAME_INTERVAL, frame_due, note_renderer, software_rendering};
 pub(crate) use shortcuts::current_os;

@@ -81,6 +81,8 @@ gpui_kit::actions!(
         ToggleHostPanel,
         /// Show or hide the right sidebar, whichever tool it is showing.
         ToggleToolSidebar,
+        /// Open the installed Quiet.md app.
+        OpenQuietMd,
         /// Fill the screen with the window, as double-clicking its title
         /// bar does.
         MaximizeWindow,

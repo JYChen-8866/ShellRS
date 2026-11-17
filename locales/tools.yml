@@ -27,6 +27,12 @@ tools.kind.monitor:
 tools.kind.projects:
   zh-CN: 项目
   en: Projects
+tools.quiet_md:
+  zh-CN: Quiet.md
+  en: Quiet.md
+tools.quiet_md.open_failed:
+  zh-CN: "无法打开 Quiet.md：%{error}"
+  en: "Couldn't open Quiet.md: %{error}"
 
 # Shared by the tools.
 tools.refresh:

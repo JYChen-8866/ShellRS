@@ -11,7 +11,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::ai::AiAssistantPanel;
-use crate::app::{CatalogIcon, NewSavedTerminal, NewTerminalGroup, ToggleTool, ToolKind};
+use crate::app::{
+    CatalogIcon, NewSavedTerminal, NewTerminalGroup, OpenQuietMd, ToggleTool, ToolKind,
+};
 use crate::docker::{Container, DockerObject, DockerPanel, ObjectSummary};
 use crate::explorer::ExplorerPanel;
 use crate::gpu::GpuPanel;
@@ -700,4 +702,17 @@ pub fn render_tool_switch(
                     target.dispatch_action(&ToggleTool(tool), window, cx)
                 })
         }))
+        // The tools sit at the top; the app launcher stays at the foot of
+        // the switch instead of taking a tool slot.
+        .child(div().flex_1().min_h_0())
+        .child({
+            let target = target.clone();
+            Button::new("tool-quiet-md")
+                .ghost()
+                .icon(Icon::new(CatalogIcon::FilePenLine))
+                .tooltip(t!("tools.quiet_md"))
+                .tooltip_placement(Placement::Left)
+                .accessibility_label(t!("tools.quiet_md"))
+                .on_click(move |_, window, cx| target.dispatch_action(&OpenQuietMd, window, cx))
+        })
 }

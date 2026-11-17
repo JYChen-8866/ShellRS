@@ -27,7 +27,7 @@ use gpui_kit::*;
 use crate::analytics::Counter;
 use crate::app::{
     CenterTab, ControlContainers, ControlService, CopyCommand, EndProcess, EnterCommand,
-    RefreshConnections, RefreshDocker, RefreshGpu, RefreshHistory, RefreshProcesses,
+    OpenQuietMd, RefreshConnections, RefreshDocker, RefreshGpu, RefreshHistory, RefreshProcesses,
     RefreshServices, RemoveDockerObject, ShowDockerObject, ShowProcess, ShowService, SortProcesses,
     ToggleAllGpuDevices, ToggleDockerProject, ToggleGpuDevice, ToggleMonitorDetail, ToggleTool,
     ToggleToolSidebar, ToolKind,
@@ -779,6 +779,21 @@ impl Workspace {
             window,
             cx,
         );
+    }
+
+    /// Open the installed Quiet.md app from the tool switch.
+    pub(super) fn on_open_quiet_md(
+        &mut self,
+        _: &OpenQuietMd,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = crate::app::open_quiet_md() {
+            window.push_notification(
+                Notification::error(t!("tools.quiet_md.open_failed", error = error.to_string())),
+                cx,
+            );
+        }
     }
 
     /// Hide the sidebar, or show the tool shown last; the first tool on

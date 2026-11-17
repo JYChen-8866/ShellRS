@@ -3149,6 +3149,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_restore_window))
             .on_action(cx.listener(Self::on_show_or_hide_app))
             .on_action(cx.listener(Self::on_toggle_tool_sidebar))
+            .on_action(cx.listener(Self::on_open_quiet_md))
             .on_action(cx.listener(Self::on_toggle_tool))
             .on_action(cx.listener(Self::on_refresh_gpu))
             .on_action(cx.listener(Self::on_toggle_gpu_device))
