@@ -4,6 +4,16 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.26] - 2026-11-17
+
+### Added
+
+- Add a Quiet.md button at the bottom of the right tool switch that opens the installed Quiet.md app directly. It works on macOS, Windows, and Linux.
+
+### Fixed
+
+- Fix the AI composer attachment area being transparent and letting pointer events fall through to the chat. The attachment area now stays opaque, and clicking its empty space focuses the editor.
+
 ## [0.1.25] - 2026-11-17
 
 ### Fixed
