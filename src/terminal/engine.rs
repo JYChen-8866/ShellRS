@@ -671,10 +671,20 @@ impl TerminalEngine {
     /// [`ExecRequest`]. `None` while the shell is not running, and so there
     /// is no connection to run it on.
     pub fn exec(&self, command: String) -> Option<mpsc::Receiver<ExecResult>> {
+        self.exec_with_timeout(command, Duration::from_secs(10))
+    }
+
+    /// Run `command` with a caller-chosen timeout; long-running file
+    /// operations such as system archive commands use this.
+    pub fn exec_with_timeout(
+        &self,
+        command: String,
+        timeout: Duration,
+    ) -> Option<mpsc::Receiver<ExecResult>> {
         if !matches!(self.lifecycle, TerminalLifecycle::Running) {
             return None;
         }
-        self.runtime.exec(command)
+        self.runtime.exec(command, timeout)
     }
 
     /// Take up an `exec --terminal` run (see [`super::TerminalRun`]): ^C to
@@ -1132,11 +1142,12 @@ impl TerminalRuntime {
         let _ = self.commands.send(TerminalTransportCommand::Shutdown);
     }
 
-    fn exec(&self, command: String) -> Option<mpsc::Receiver<ExecResult>> {
+    fn exec(&self, command: String, timeout: Duration) -> Option<mpsc::Receiver<ExecResult>> {
         let (reply, receiver) = mpsc::channel();
         self.commands
             .send(TerminalTransportCommand::Exec(ExecRequest {
                 command,
+                timeout,
                 reply,
             }))
             .ok()?;

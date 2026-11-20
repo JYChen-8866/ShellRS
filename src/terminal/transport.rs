@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 
 use anyhow::Result;
 use async_channel::Sender;
@@ -46,6 +47,8 @@ pub type ExecResult = Result<String, String>;
 /// drops the request, which the asker sees as the reply channel closing.
 pub struct ExecRequest {
     pub command: String,
+    /// How long the transport waits for the command to finish.
+    pub timeout: Duration,
     pub reply: mpsc::Sender<ExecResult>,
 }
 

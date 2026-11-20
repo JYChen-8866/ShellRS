@@ -173,6 +173,18 @@ explorer.toolbar.choose_files:
 explorer.command.rename:
   zh-CN: 重命名…
   en: Rename…
+explorer.command.copy_name:
+  zh-CN: 复制文件名
+  en: Copy file name
+explorer.command.copy_file_address:
+  zh-CN: 复制文件地址
+  en: Copy file address
+explorer.command.compress:
+  zh-CN: 压缩…
+  en: Compress…
+explorer.command.extract:
+  zh-CN: 解压
+  en: Extract
 explorer.command.properties:
   zh-CN: 属性…
   en: Properties…
@@ -504,6 +516,15 @@ explorer.rename.commit:
 explorer.rename.label:
   zh-CN: 新名称
   en: New name
+explorer.compress.title:
+  zh-CN: 压缩所选项目
+  en: Compress selected items
+explorer.compress.commit:
+  zh-CN: 压缩
+  en: Compress
+explorer.compress.label:
+  zh-CN: 压缩包名称（.zip 或 .tar.gz）
+  en: Archive name (.zip or .tar.gz)
 explorer.new.commit:
   zh-CN: 创建
   en: Create
@@ -619,6 +640,24 @@ explorer.operation.create_failed:
 explorer.operation.permissions_failed:
   zh-CN: 修改权限失败
   en: Couldn’t change permissions
+explorer.archive.compress_failed:
+  zh-CN: 压缩失败
+  en: Couldn’t compress
+explorer.archive.extract_failed:
+  zh-CN: 解压失败
+  en: Couldn’t extract
+explorer.archive.compress_succeeded:
+  zh-CN: 已创建压缩包「%{name}」
+  en: Created archive “%{name}”
+explorer.archive.extract_succeeded:
+  zh-CN: 已解压「%{name}」
+  en: Extracted “%{name}”
+explorer.archive.command_failed:
+  zh-CN: 系统压缩命令没有成功完成。
+  en: The system archiver did not complete successfully.
+explorer.archive.not_connected:
+  zh-CN: 请先打开此主机的 SSH 终端，再运行系统压缩命令。
+  en: Open an SSH terminal for this host before running a system archiver.
 
 explorer.properties.title_one:
   zh-CN: 「%{name}」的属性

@@ -1854,6 +1854,15 @@ impl Workspace {
         {
             return;
         }
+        if self.handle_archive_command(
+            action.explorer(),
+            panel.clone(),
+            action.command(),
+            window,
+            cx,
+        ) {
+            return;
+        }
         if matches!(action.command(), ExplorerCommand::CancelTransfer) {
             self.cancel_prompts_for_owner(
                 PromptOwner::Sftp(action.explorer(), panel.read(cx).generation()),

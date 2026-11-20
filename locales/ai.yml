@@ -138,12 +138,18 @@ ai.permission.input_label:
 ai.permission.input_placeholder:
   zh-CN: 告诉 Claude 下一步怎么做…
   en: Tell Claude what to do instead…
-ai.composer.placeholder:
-  zh-CN: 让 AI 帮忙做点什么…（Ctrl+Enter 发送，Enter 换行）
-  en: Ask the AI to do something… (Ctrl+Enter to send, Enter for a new line)
+ai.composer.placeholder.modifier_enter:
+  zh-CN: 让 AI 帮忙做点什么…（%{key}+Enter 发送，Enter 换行）
+  en: Ask the AI to do something… (%{key}+Enter to send, Enter for a new line)
+ai.composer.placeholder.enter:
+  zh-CN: 让 AI 帮忙做点什么…（Enter 发送，Shift+Enter 换行）
+  en: Ask the AI to do something… (Enter to send, Shift+Enter for a new line)
 ai.composer.attach:
   zh-CN: 添加文件
   en: Add file
+ai.composer.resize_height:
+  zh-CN: 拖动调整输入框高度，双击恢复自动高度
+  en: Drag to resize the composer; double-click to restore automatic height
 ai.composer.send:
   zh-CN: 发送
   en: Send
@@ -191,8 +197,8 @@ ai.attachments.remove:
   zh-CN: 移除附件
   en: Remove attachment
 ai.attachments.too_large:
-  zh-CN: "附件「%{name}」超过 512 KB，未加入上下文。"
-  en: "The attachment “%{name}” is over 512 KB and was not added."
+  zh-CN: "附件「%{name}」超过 100 MB，未加入上下文。"
+  en: "The attachment “%{name}” is over 100 MB and was not added."
 ai.attachments.unreadable:
   zh-CN: "无法读取附件「%{name}」：%{error}"
   en: "Couldn't read attachment “%{name}”: %{error}"

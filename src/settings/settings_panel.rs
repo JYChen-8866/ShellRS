@@ -880,7 +880,28 @@ fn highlight_preview_item() -> SettingItem {
 
 /// 键盘快捷键.
 fn shortcuts_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
-    shortcut_groups(&panel.shortcuts)
+    let mut groups = shortcut_groups(&panel.shortcuts);
+    groups.push(
+        SettingGroup::new()
+            .title(t!("ai.title"))
+            .items([SettingItem::new(
+                t!("settings.ai.send_shortcut"),
+                choice_field(
+                    &panel.store,
+                    |settings| settings.ai.send_shortcut,
+                    |settings, shortcut| settings.ai.send_shortcut = shortcut,
+                ),
+            )
+            .description(t!(
+                "settings.ai.send_shortcut_description",
+                key = if cfg!(target_os = "macos") {
+                    "⌘"
+                } else {
+                    "Ctrl"
+                }
+            ))]),
+    );
+    groups
 }
 
 /// 同步.

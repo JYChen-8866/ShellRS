@@ -30,6 +30,10 @@ pub(super) struct PaneMenuState {
     pub bookmarks: Vec<String>,
     /// Commands that change files can run now.
     pub can_modify: bool,
+    /// The host's system archivers can run for this pane.
+    pub can_archive: bool,
+    /// The one selected file is an archive the system can extract.
+    pub can_extract: bool,
     /// A transfer can start now.
     pub can_transfer: bool,
     /// 显示隐藏文件 is on for this side.
@@ -87,38 +91,67 @@ pub(super) fn item_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
     } else {
         (t!("explorer.command.upload"), CatalogIcon::Upload)
     };
-    menu.menu_with_icon_and_disabled(
-        verb,
-        Icon::new(icon),
-        state.action(ExplorerCommand::Transfer { remote }),
-        state.targets.is_empty() || !state.can_transfer,
-    )
-    .menu_with_icon_and_disabled(
-        t!("explorer.command.copy_path"),
-        Icon::new(IconName::Copy),
-        state.action(ExplorerCommand::CopySelectedPaths { remote }),
-        state.targets.is_empty(),
-    )
-    .separator()
-    .menu_with_icon_and_disabled(
-        t!("common.delete"),
-        Icon::new(CatalogIcon::Trash),
-        state.action(ExplorerCommand::Delete { remote }),
-        none,
-    )
-    .menu_with_icon_and_disabled(
-        t!("explorer.command.rename"),
-        Icon::new(CatalogIcon::SquarePen),
-        state.action(ExplorerCommand::Rename { remote }),
-        none || state.targets.len() != 1,
-    )
-    .separator()
-    .menu_with_icon_and_disabled(
-        t!("explorer.command.properties"),
-        Icon::new(IconName::Info),
-        state.action(ExplorerCommand::Properties { remote }),
-        none,
-    )
+    let menu = menu
+        .menu_with_icon_and_disabled(
+            verb,
+            Icon::new(icon),
+            state.action(ExplorerCommand::Transfer { remote }),
+            state.targets.is_empty() || !state.can_transfer,
+        )
+        .menu_with_icon_and_disabled(
+            t!("explorer.command.copy_name"),
+            Icon::new(IconName::Copy),
+            state.action(ExplorerCommand::CopySelectedNames { remote }),
+            state.targets.is_empty(),
+        )
+        .menu_with_icon_and_disabled(
+            t!("explorer.command.copy_file_address"),
+            Icon::new(IconName::Copy),
+            state.action(ExplorerCommand::CopySelectedPaths { remote }),
+            state.targets.is_empty(),
+        );
+    let menu = if state.can_archive {
+        menu.separator()
+            .menu_with_icon_and_disabled(
+                t!("explorer.command.compress"),
+                Icon::new(CatalogIcon::Archive),
+                state.action(ExplorerCommand::Compress {
+                    remote,
+                    names: state.targets.clone(),
+                }),
+                none,
+            )
+            .menu_with_icon_and_disabled(
+                t!("explorer.command.extract"),
+                Icon::new(CatalogIcon::ArchiveRestore),
+                state.action(ExplorerCommand::Extract {
+                    remote,
+                    names: state.targets.clone(),
+                }),
+                none || !state.can_extract,
+            )
+    } else {
+        menu
+    };
+    menu.separator()
+        .menu_with_icon_and_disabled(
+            t!("explorer.command.rename"),
+            Icon::new(CatalogIcon::SquarePen),
+            state.action(ExplorerCommand::Rename { remote }),
+            none || state.targets.len() != 1,
+        )
+        .menu_with_icon_and_disabled(
+            t!("common.delete"),
+            Icon::new(CatalogIcon::Trash),
+            state.action(ExplorerCommand::Delete { remote }),
+            none,
+        )
+        .menu_with_icon_and_disabled(
+            t!("explorer.command.properties"),
+            Icon::new(IconName::Info),
+            state.action(ExplorerCommand::Properties { remote }),
+            none,
+        )
 }
 
 /// Right-click on empty space: commands for the directory itself.

@@ -96,6 +96,8 @@ icon_assets!(
         FileSearch,
         SquareDashedText,
         CopyPlus,
+        Archive,
+        ArchiveRestore,
         CloudSync,
         Sparkles,
         ShieldCheck,

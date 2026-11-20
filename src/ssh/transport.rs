@@ -270,8 +270,12 @@ fn pixel_dimension(cells: usize, cell_size: u16) -> u32 {
 /// Run one command beside the shell and answer its request: what it printed
 /// on standard output, or why it did not run.
 async fn answer_exec(handle: &SshHandle, request: ExecRequest) {
-    let ExecRequest { command, reply } = request;
-    let result = run_exec(handle, &command, EXEC_OUTPUT_LIMIT, EXEC_TIMEOUT)
+    let ExecRequest {
+        command,
+        timeout,
+        reply,
+    } = request;
+    let result = run_exec(handle, &command, EXEC_OUTPUT_LIMIT, timeout)
         .await
         .map(|output| String::from_utf8_lossy(&output).into_owned())
         .map_err(|error| describe_error(&error));
@@ -900,6 +904,7 @@ mod tests {
                 command_tx
                     .send(TerminalTransportCommand::Exec(ExecRequest {
                         command: command.to_string(),
+                        timeout: EXEC_TIMEOUT,
                         reply,
                     }))
                     .unwrap();

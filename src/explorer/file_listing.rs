@@ -4,6 +4,7 @@ use crate::i18n::{t, tn};
 use crate::sftp::TransferDirection;
 use gpui_kit::component::{
     ActiveTheme as _, h_flex,
+    menu::ContextMenuExt as _,
     table::{Column, ColumnSort, TableDelegate, TableState},
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -19,6 +20,7 @@ use super::{
     ClickMode, ExplorerId, FileEntry, FileIcon, FilePane, FileSizeFormat, PaneSide, Selection,
     child_path, format_changed, format_rights,
     marquee::{ListGeometry, Pressed, ends_a_drag},
+    pane_menu::item_menu,
 };
 
 /// What the row closures need from the pane, pushed in by `FilePane` so
@@ -285,51 +287,69 @@ impl FileListing {
     /// A name cell's clicks: select (⌘ adds or removes, Shift extends), open
     /// on a double click, and select before the context menu so it acts on
     /// what is highlighted.
-    fn name_events(&self, cell: Stateful<Div>, name: &str) -> Stateful<Div> {
+    fn name_events(&self, cell: Stateful<Div>, name: &str) -> AnyElement {
         let geometry = self.context.geometry.clone();
-        let cell = cell.on_any_mouse_down(move |_, _, _| geometry.pressed.set(Pressed::Name));
+        let cell = cell
+            .test_support()
+            .on_any_mouse_down(move |_, _, _| geometry.pressed.set(Pressed::Name));
         let (Some(dispatch), Some(pane)) =
             (self.context.dispatch.clone(), self.context.pane.clone())
         else {
-            return cell;
+            return cell.into_any_element();
         };
         let sid = self.context.explorer;
         let remote = self.side == PaneSide::Remote;
-        cell.on_click({
-            let name = name.to_string();
+        let cell = cell
+            .on_click({
+                let name = name.to_string();
+                let pane = pane.clone();
+                move |event, window, cx| {
+                    if ends_a_drag(event) {
+                        return;
+                    }
+                    let modifiers = event.modifiers();
+                    let mode = if modifiers.shift {
+                        ClickMode::Extend
+                    } else if modifiers.secondary(cx) {
+                        ClickMode::Toggle
+                    } else {
+                        ClickMode::Replace
+                    };
+                    let _ = pane.update(cx, |pane, cx| pane.click_row(&name, mode, cx));
+                    if mode == ClickMode::Replace && event.click_count() == 2 {
+                        dispatch.dispatch_explorer_action(
+                            &ExplorerAction::new(sid, ExplorerCommand::Open { remote }),
+                            window,
+                            cx,
+                        );
+                    }
+                }
+            })
+            .on_mouse_down(MouseButton::Right, {
+                let hit = (name != "..").then(|| name.to_string());
+                let menu_hit = self.context.menu_hit.clone();
+                let pane = pane.clone();
+                move |_, _, cx| {
+                    if let Some(hit) = &hit {
+                        let _ = pane.update(cx, |pane, cx| pane.select_pressed(hit, cx));
+                    }
+                    *menu_hit.borrow_mut() = hit.clone().map(MenuHit::Item);
+                }
+            });
+        cell.context_menu({
             let pane = pane.clone();
-            move |event, window, cx| {
-                if ends_a_drag(event) {
-                    return;
+            let opens_menu = name != "..";
+            move |menu, _, cx| {
+                if !opens_menu {
+                    return menu;
                 }
-                let modifiers = event.modifiers();
-                let mode = if modifiers.shift {
-                    ClickMode::Extend
-                } else if modifiers.secondary(cx) {
-                    ClickMode::Toggle
-                } else {
-                    ClickMode::Replace
+                let Some(pane) = pane.upgrade() else {
+                    return menu;
                 };
-                let _ = pane.update(cx, |pane, cx| pane.click_row(&name, mode, cx));
-                if mode == ClickMode::Replace && event.click_count() == 2 {
-                    dispatch.dispatch_explorer_action(
-                        &ExplorerAction::new(sid, ExplorerCommand::Open { remote }),
-                        window,
-                        cx,
-                    );
-                }
+                item_menu(menu, &pane.read(cx).menu_state(cx))
             }
         })
-        .on_mouse_down(MouseButton::Right, {
-            let hit = (name != "..").then(|| name.to_string());
-            let menu_hit = self.context.menu_hit.clone();
-            move |_, _, cx| {
-                if let Some(hit) = &hit {
-                    let _ = pane.update(cx, |pane, cx| pane.select_pressed(hit, cx));
-                }
-                *menu_hit.borrow_mut() = hit.clone().map(MenuHit::Item);
-            }
-        })
+        .into_any_element()
     }
 
     pub fn set_rows(&mut self, rows: Vec<FileEntry>) {
@@ -494,8 +514,6 @@ impl TableDelegate for FileListing {
                     })
                     .child(label.test_support().aria_selected(selected));
                 self.name_events(cell, &entry.name)
-                    .test_support()
-                    .into_any_element()
             }
             "size" => {
                 let size = (!entry.is_dir()).then(|| {

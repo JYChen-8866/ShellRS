@@ -14,7 +14,7 @@ use crate::{
         CatalogIcon, ExplorerAction, ExplorerCommand, ExplorerShortcut, LOCAL_FILE_LIST_CONTEXT,
         REMOTE_FILE_LIST_CONTEXT, ToggleDirectoryFollow, ToggleHiddenFiles,
     },
-    host::{BookmarkSide, ConnectionState, HostId, HostStore},
+    host::{BookmarkSide, ConnectionState, HostId, HostOs, HostStore},
     i18n::{UiLocale, t, tn},
     sftp::{DirectoryListing, Place, SharedLocalDirectoryProvider},
 };
@@ -883,6 +883,18 @@ impl FilePane {
     pub(super) fn menu_state(&self, cx: &App) -> PaneMenuState {
         let targets = self.selected_names(cx);
         let entries = self.selected_entries(cx);
+        let can_archive = self.compact
+            && self.is_remote()
+            && self
+                .store
+                .read(cx)
+                .host(self.host_id)
+                .is_none_or(|host| host.os != Some(HostOs::Windows));
+        let can_extract = can_archive
+            && matches!(
+                entries.as_slice(),
+                [entry] if !entry.is_dir() && super::archive::is_extractable(&entry.name)
+            );
         PaneMenuState {
             remote: self.is_remote(),
             explorer: self.explorer,
@@ -904,6 +916,8 @@ impl FilePane {
             path: self.path.clone(),
             bookmarks: self.bookmarks(cx),
             can_modify: self.takes_commands() && !self.busy,
+            can_archive,
+            can_extract,
             can_transfer: self.transfer_enabled,
             show_hidden: ShowHiddenFiles::get(self.side, cx),
             finds: self.is_remote() && !self.compact,
@@ -1302,10 +1316,9 @@ impl Render for FilePane {
                         self.path.clone(),
                     )
                 })
-                // One menu for rows, column titles and empty space, on the
-                // container: see `HostPanel` for why menus stay off
-                // virtual rows. Two menus would also both open, since a
-                // menu does not stop the click reaching the one around it.
+                // Name cells own their menus, so the innermost trigger claims
+                // their right-clicks. This container menu covers empty space,
+                // column titles, and the rest of a row.
                 .context_menu(move |menu, window, cx| {
                     let Some(state) = pane.upgrade().map(|pane| pane.read(cx).menu_state(cx))
                     else {

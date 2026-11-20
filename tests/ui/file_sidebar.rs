@@ -321,6 +321,96 @@ async fn closing_a_terminal_whose_files_download_asks_first(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
+async fn files_copy_names_and_run_the_system_archiver(cx: &mut TestAppContext) {
+    let fixture = open_with(
+        cx,
+        FakeSftpProvider::default(),
+        FakeTerminalFactory::answering(&["__SHELLRS_ARCHIVE_DONE__"]),
+    );
+    let settings = cx.update(|cx| fixture.workspace.read(cx).settings().clone());
+    cx.update(|cx| {
+        settings.update(cx, |settings, cx| {
+            settings.update(
+                |settings| settings.file_sidebar.detect_directory_follow = false,
+                cx,
+            )
+        })
+    });
+    show_files(cx, &fixture, INITIAL_WEB_TERMINAL, FILES).await;
+
+    in_frame(cx, fixture.handle, |window, cx| {
+        window
+            .within(("remote-pane", FILES))
+            .click("name:文件 甲.txt", cx);
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(FILES),
+                ExplorerCommand::CopySelectedNames { remote: true },
+            )),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some("文件 甲.txt".into())
+    );
+
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(FILES),
+                ExplorerCommand::Compress {
+                    remote: true,
+                    names: vec!["文件 甲.txt".into()],
+                },
+            )),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    in_frame(cx, fixture.handle, |window, cx| {
+        assert_eq!(window.find("entry-name").value(), Some("文件 甲.txt.zip"));
+        window.click("commit", cx);
+    });
+    cx.wait_for(fixture.handle.into(), Duration::from_secs(2), |_, _| {
+        fixture.terminals.exec_count() == 1
+    })
+    .await;
+    let compress = fixture.terminals.exec_commands()[0].clone();
+    assert!(compress.contains("sh -c "), "{compress}");
+    assert!(compress.contains("/home/tester"), "{compress}");
+    assert!(
+        compress.contains("zip -qr ") && compress.contains("文件 甲.txt.zip"),
+        "{compress}"
+    );
+
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(FILES),
+                ExplorerCommand::Extract {
+                    remote: true,
+                    names: vec!["bundle.zip".into()],
+                },
+            )),
+            cx,
+        );
+    });
+    cx.wait_for(fixture.handle.into(), Duration::from_secs(2), |_, _| {
+        fixture.terminals.exec_count() == 2
+    })
+    .await;
+    let extract = fixture.terminals.exec_commands()[1].clone();
+    assert!(extract.contains("sh -c "), "{extract}");
+    assert!(extract.contains("/home/tester"), "{extract}");
+    assert!(
+        extract.contains("unzip -nq ") && extract.contains("bundle.zip"),
+        "{extract}"
+    );
+}
+
+#[gpui_kit::test]
 async fn closing_a_terminal_asks_once_about_files_its_files_left_unsaved(cx: &mut TestAppContext) {
     let fixture = open(
         cx,

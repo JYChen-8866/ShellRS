@@ -866,6 +866,23 @@ async fn sftp_path_label_opens_ancestors_and_the_open_directory_dialog(cx: &mut 
         cx.read_from_clipboard().and_then(|item| item.text()),
         Some("/local/tester/目录\n/local/tester/文件 甲.txt".into())
     );
+
+    // 复制文件名 copies only the names.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(SFTP_TAB),
+                ExplorerCommand::CopySelectedNames { remote: false },
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some("目录\n文件 甲.txt".into())
+    );
 }
 
 #[gpui_kit::test]

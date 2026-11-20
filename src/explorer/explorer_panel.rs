@@ -840,6 +840,12 @@ impl ExplorerPanel {
                     cx.write_to_clipboard(ClipboardItem::new_string(paths.join("\n")));
                 }
             }
+            ExplorerCommand::CopySelectedNames { remote } => {
+                let names = self.pane(*remote).read(cx).selected_names(cx);
+                if !names.is_empty() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(names.join("\n")));
+                }
+            }
             ExplorerCommand::FocusPane { remote } => {
                 let focus = self.pane(*remote || self.sidebar).read(cx).focus_handle(cx);
                 window.focus(&focus, cx);
@@ -882,6 +888,11 @@ impl ExplorerPanel {
             ExplorerCommand::Delete { remote } => self.confirm_delete(*remote, window, cx),
             ExplorerCommand::DeletePaths { paths } => self.delete_paths(paths.clone(), window, cx),
             ExplorerCommand::Rename { remote } => self.open_rename(*remote, window, cx),
+            ExplorerCommand::Compress { remote, names } => {
+                self.open_compress(*remote, names.clone(), window, cx)
+            }
+            // The workspace runs these on the terminal's connection.
+            ExplorerCommand::Archive { .. } | ExplorerCommand::Extract { .. } => {}
             ExplorerCommand::New { remote, kind } => self.open_new(*remote, *kind, window, cx),
             ExplorerCommand::Properties { remote } => self.open_properties(*remote, window, cx),
             ExplorerCommand::Operate { remote, operation } => {
@@ -1122,6 +1133,9 @@ fn needs_connection(command: &ExplorerCommand) -> bool {
         | C::OpenDirectory { remote }
         | C::Delete { remote }
         | C::Rename { remote }
+        | C::Compress { remote, .. }
+        | C::Archive { remote, .. }
+        | C::Extract { remote, .. }
         | C::New { remote, .. }
         | C::Properties { remote }
         | C::Operate { remote, .. } => *remote,

@@ -2,6 +2,7 @@
 
 use gpui_kit::Keystroke;
 use shellrs::app::{CenterTab, Shortcut};
+use shellrs::settings::AiSendShortcut;
 use shellrs::terminal::RemoteTerminalId;
 
 use crate::support::*;
@@ -68,6 +69,71 @@ fn overrides(workspace: &Entity<Workspace>, cx: &mut TestAppContext) -> serde_js
     cx.update(|cx| {
         serde_json::to_value(workspace.read(cx).settings().read(cx).settings().shortcuts).unwrap()
     })
+}
+
+/// Scroll to the last group on the shortcuts page: the AI composer's send
+/// key follows the platform shortcuts.
+fn scroll_to_ai_shortcuts(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
+    for _ in 0..6 {
+        in_frame(cx, handle, |window, cx| {
+            let position = window.find("settings").bounds().center();
+            window.dispatch_event(
+                gpui_kit::ScrollEvent {
+                    position,
+                    delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-1000.))),
+                    modifiers: gpui_kit::Modifiers::default(),
+                    touch_phase: gpui_kit::TouchPhase::Moved,
+                    source: gpui_kit::ScrollSource::Pointer,
+                }
+                .to_platform_input(),
+                cx,
+            );
+        });
+    }
+}
+
+#[gpui_kit::test]
+fn the_ai_send_shortcut_is_a_setting_with_enter_and_modifier_enter(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    open_shortcuts(cx, handle);
+    scroll_to_ai_shortcuts(cx, handle);
+
+    let modifier = if cfg!(target_os = "macos") {
+        "⌘ + Enter"
+    } else {
+        "Ctrl + Enter"
+    };
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window
+                .within("group-4")
+                .within("item-0")
+                .find("btn")
+                .label(),
+            Some(format!("发送消息: {modifier}").as_str())
+        );
+    });
+
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    cx.update(|cx| {
+        settings.update(cx, |settings, cx| {
+            settings.update(
+                |settings| settings.ai.send_shortcut = AiSendShortcut::Enter,
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window
+                .within("group-4")
+                .within("item-0")
+                .find("btn")
+                .label(),
+            Some("发送消息: Enter")
+        );
+    });
 }
 
 #[gpui_kit::test]

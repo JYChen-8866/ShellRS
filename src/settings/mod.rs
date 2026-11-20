@@ -17,8 +17,8 @@ pub use apply::apply;
 pub use model::{
     AI_COMMAND_TIMEOUT_RANGE, AI_MAX_ROUNDS_RANGE, AI_PROMPT_LIMIT, AI_RECENT_OUTPUT_RANGE,
     AiAssistantSettings, AiCommandAction, AiCommandRule, AiConfirmationStrategy, AiDisplayLevel,
-    AiEnvironment, AiExecutionMode, AiNetworkAccess, AiProtocol, AnalyticsSettings, AppSettings,
-    Appearance, BackgroundImageSettings, Choice, DEFAULT_BACKGROUND_OPACITY,
+    AiEnvironment, AiExecutionMode, AiNetworkAccess, AiProtocol, AiSendShortcut, AnalyticsSettings,
+    AppSettings, Appearance, BackgroundImageSettings, Choice, DEFAULT_BACKGROUND_OPACITY,
     DEFAULT_INTERFACE_FONT_SIZE, ExternalCliSettings, INTERFACE_FONT_SIZE_RANGE, InterfaceLanguage,
     InterfaceSettings, LocalTerminalSettings, NotificationSettings, SidebarTools, SidebarWidths,
     SyncLocation, SyncSettings, TerminalBackgroundSettings, TerminalFontSettings,

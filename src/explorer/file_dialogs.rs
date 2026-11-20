@@ -1,6 +1,9 @@
 //! The delete confirmation and the name form shared by 重命名 and 新建.
 
-use super::{ExplorerPanel, NewEntryKind, PaneOperation};
+use super::{
+    ExplorerPanel, NewEntryKind, PaneOperation,
+    archive::{default_archive_name, normalize_archive_name},
+};
 use crate::app::ExplorerCommand;
 use crate::i18n::{t, tn};
 use crate::shared::{commit_footer, dismiss_form_error, form_error_notification};
@@ -44,6 +47,7 @@ pub fn validate_entry_name(
 enum NameIntent {
     Rename(String),
     New(NewEntryKind),
+    Compress(Vec<String>),
 }
 
 struct NameForm {
@@ -146,6 +150,18 @@ impl ExplorerPanel {
         self.open_name_dialog(remote, NameIntent::New(kind), window, cx);
     }
 
+    pub(super) fn open_compress(
+        &mut self,
+        remote: bool,
+        names: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !names.is_empty() && self.can_modify(remote, cx) {
+            self.open_name_dialog(remote, NameIntent::Compress(names), window, cx);
+        }
+    }
+
     fn open_name_dialog(
         &mut self,
         remote: bool,
@@ -177,6 +193,12 @@ impl ExplorerPanel {
                 t!("explorer.new.commit"),
                 t!("explorer.new.label"),
             ),
+            NameIntent::Compress(names) => (
+                t!("explorer.compress.title"),
+                default_archive_name(names),
+                t!("explorer.compress.commit"),
+                t!("explorer.compress.label"),
+            ),
         };
         let input = cx.new(|cx| InputState::new(window, cx).default_value(initial));
         let form = cx.new(|_| NameForm { input, label });
@@ -197,23 +219,49 @@ impl ExplorerPanel {
                         existing.clone(),
                     );
                     move |_, window, cx| {
-                        let name = form.read(cx).input.read(cx).value().to_string();
+                        let mut name = form.read(cx).input.read(cx).value().to_string();
                         let original = match &intent {
                             NameIntent::Rename(from) => Some(from.as_str()),
                             NameIntent::New(_) => None,
+                            NameIntent::Compress(_) => None,
                         };
+                        if matches!(&intent, NameIntent::Compress(_)) {
+                            name = normalize_archive_name(&name);
+                        }
                         if let Err(error) = validate_entry_name(&name, original, &existing) {
                             window.push_notification(form_error_notification(error), cx);
                             return false;
                         }
-                        let operation = match &intent {
-                            NameIntent::Rename(from) => PaneOperation::Rename {
-                                from: from.clone(),
-                                to: name,
-                            },
-                            NameIntent::New(kind) => PaneOperation::Create { kind: *kind, name },
-                        };
-                        sender.send(ExplorerCommand::Operate { remote, operation }, window, cx);
+                        match &intent {
+                            NameIntent::Rename(from) => {
+                                let operation = PaneOperation::Rename {
+                                    from: from.clone(),
+                                    to: name,
+                                };
+                                sender.send(
+                                    ExplorerCommand::Operate { remote, operation },
+                                    window,
+                                    cx,
+                                );
+                            }
+                            NameIntent::New(kind) => {
+                                let operation = PaneOperation::Create { kind: *kind, name };
+                                sender.send(
+                                    ExplorerCommand::Operate { remote, operation },
+                                    window,
+                                    cx,
+                                );
+                            }
+                            NameIntent::Compress(names) => sender.send(
+                                ExplorerCommand::Archive {
+                                    remote,
+                                    names: names.clone(),
+                                    archive: name,
+                                },
+                                window,
+                                cx,
+                            ),
+                        }
                         true
                     }
                 })

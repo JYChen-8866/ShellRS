@@ -1,5 +1,6 @@
 //! The SFTP tab: local and remote file browsing, transfers and their queue.
 
+pub(crate) mod archive;
 mod explorer_panel;
 mod file_dialogs;
 mod file_edit;

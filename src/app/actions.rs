@@ -795,6 +795,26 @@ pub enum ExplorerCommand {
     CopySelectedPaths {
         remote: bool,
     },
+    /// 复制文件名 on a row: the selected rows' names, one per line.
+    CopySelectedNames {
+        remote: bool,
+    },
+    /// Ask for the archive name before compressing the selected items.
+    Compress {
+        remote: bool,
+        names: Vec<String>,
+    },
+    /// Compress the selected items with the host's system archiver.
+    Archive {
+        remote: bool,
+        names: Vec<String>,
+        archive: String,
+    },
+    /// Extract the selected archive with the host's system archiver.
+    Extract {
+        remote: bool,
+        names: Vec<String>,
+    },
     /// Move keyboard focus to a pane's file list.
     FocusPane {
         remote: bool,

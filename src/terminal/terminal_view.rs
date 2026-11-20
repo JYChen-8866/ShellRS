@@ -544,6 +544,17 @@ impl TerminalView {
         self.engine.read(cx).exec(command)
     }
 
+    /// Run `command` beside the shell with a longer timeout, for operations
+    /// such as compressing a directory that may take more than a moment.
+    pub fn exec_with_timeout(
+        &self,
+        command: String,
+        timeout: std::time::Duration,
+        cx: &App,
+    ) -> Option<std::sync::mpsc::Receiver<super::ExecResult>> {
+        self.engine.read(cx).exec_with_timeout(command, timeout)
+    }
+
     /// Take up an `exec --terminal` run; see [`TerminalEngine::run_command`].
     pub fn run_command(&self, run: super::RunHandle, cx: &App) -> Result<(), super::RunFailure> {
         self.engine.read(cx).run_command(run)

@@ -51,7 +51,8 @@ use crate::claude::{self, ClaudeEvent};
 use crate::i18n::t;
 use crate::md;
 use crate::settings::{
-    AiAssistantSettings, AiConfirmationStrategy, AiExecutionMode, Choice as _, SettingsStore,
+    AiAssistantSettings, AiConfirmationStrategy, AiExecutionMode, AiSendShortcut, Choice as _,
+    SettingsStore,
 };
 use crate::shared::open_image_preview;
 use crate::terminal::TerminalFont;
@@ -71,6 +72,14 @@ const USER_MESSAGE_MAX_HEIGHT: f32 = 25.0;
 const USER_MESSAGE_VIEWPORT_MAX_HEIGHT: f32 = 24.0;
 const COMPOSER_MIN_ROWS: usize = 3;
 const COMPOSER_MAX_ROWS: usize = 7;
+/// The tallest the composer may be dragged to, as a share of the window.
+const COMPOSER_MAX_VIEWPORT_FRACTION: f32 = 0.55;
+/// Files above this size are sent as paths for Claude to inspect with its
+/// file tools instead of being copied into the prompt.
+const MAX_INLINE_ATTACHMENT_BYTES: u64 = 512 * 1024;
+/// Hard limit for attaching a local file. Images have a lower provider limit
+/// and are validated separately.
+const MAX_ATTACHMENT_BYTES: u64 = 100 * 1024 * 1024;
 
 fn prompt_rows(source: &str) -> usize {
     source
@@ -79,13 +88,48 @@ fn prompt_rows(source: &str) -> usize {
         .clamp(COMPOSER_MIN_ROWS, COMPOSER_MAX_ROWS)
 }
 
-fn is_send_shortcut(keystroke: &Keystroke) -> bool {
-    keystroke.key == "enter"
-        && keystroke.modifiers.control
-        && !keystroke.modifiers.alt
-        && !keystroke.modifiers.shift
-        && !keystroke.modifiers.platform
-        && !keystroke.modifiers.function
+fn composer_row_height(cx: &App) -> f32 {
+    cx.theme().mono_font_size.as_f32() * 1.5
+}
+
+fn composer_editor_height(row_height: f32, rows: usize) -> Pixels {
+    px(row_height * rows as f32 + 16.)
+}
+
+fn composer_max_rows(window: &Window, row_height: f32) -> usize {
+    let available = f32::from(window.viewport_size().height) * COMPOSER_MAX_VIEWPORT_FRACTION - 16.;
+    ((available / row_height).floor() as usize).max(COMPOSER_MIN_ROWS)
+}
+
+fn is_send_shortcut(shortcut: AiSendShortcut, keystroke: &Keystroke) -> bool {
+    if keystroke.key != "enter" {
+        return false;
+    }
+    match shortcut {
+        AiSendShortcut::Enter => keystroke.modifiers.number_of_modifiers() == 0,
+        AiSendShortcut::ModifierEnter => {
+            let secondary = if cfg!(target_os = "macos") {
+                keystroke.modifiers.platform
+            } else {
+                keystroke.modifiers.control
+            };
+            secondary && keystroke.modifiers.number_of_modifiers() == 1
+        }
+    }
+}
+
+fn composer_placeholder(shortcut: AiSendShortcut) -> SharedString {
+    match shortcut {
+        AiSendShortcut::Enter => t!("ai.composer.placeholder.enter"),
+        AiSendShortcut::ModifierEnter => t!(
+            "ai.composer.placeholder.modifier_enter",
+            key = if cfg!(target_os = "macos") {
+                "⌘"
+            } else {
+                "Ctrl"
+            }
+        ),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,6 +219,20 @@ struct ClaudeBridge {
     _events: Task<()>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ComposerResizeStart {
+    y: Pixels,
+    rows: usize,
+}
+
+struct ComposerResizeDrag;
+
+impl Render for ComposerResizeDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
 /// A retained animation island. The message list can update streaming text at
 /// its own cadence without rebuilding the spinner/shimmer row on every display
 /// frame. Zed uses the same `window.use_state` pattern for `GeneratingSpinner`.
@@ -204,6 +262,8 @@ pub struct AiAssistantPanel {
     host: Option<SharedString>,
     input: Entity<EditorState>,
     input_rows: usize,
+    composer_rows_override: Option<usize>,
+    composer_resize_start: Option<ComposerResizeStart>,
     messages: Rc<Vec<Message>>,
     claude: Option<ClaudeBridge>,
     session_id: Option<Uuid>,
@@ -260,15 +320,15 @@ impl AiAssistantPanel {
             if !input_focus.is_focused(window) {
                 return;
             }
-            if is_send_shortcut(&event.keystroke) {
-                let _ = skill_panel.update(cx, |panel, cx| panel.send(window, cx));
-                cx.stop_propagation();
-                return;
-            }
             let keystroke = event.keystroke.clone();
             let handled = skill_panel
                 .update(cx, |panel, cx| {
-                    panel.handle_skill_key(&keystroke, window, cx)
+                    if is_send_shortcut(panel.ai(cx).send_shortcut, &keystroke) {
+                        panel.send(window, cx);
+                        true
+                    } else {
+                        panel.handle_skill_key(&keystroke, window, cx)
+                    }
                 })
                 .unwrap_or(false);
             if handled {
@@ -318,6 +378,8 @@ impl AiAssistantPanel {
             host: None,
             input,
             input_rows: COMPOSER_MIN_ROWS,
+            composer_rows_override: None,
+            composer_resize_start: None,
             messages: Rc::new(Vec::new()),
             claude: None,
             session_id: None,
@@ -373,10 +435,45 @@ impl AiAssistantPanel {
     }
 
     fn set_input_rows(&mut self, rows: usize, cx: &mut Context<Self>) {
+        let rows = self.composer_rows_override.unwrap_or(rows);
         if rows != self.input_rows {
             self.input_rows = rows;
             cx.notify();
         }
+    }
+
+    fn start_composer_resize(&mut self, y: Pixels, cx: &mut Context<Self>) {
+        self.composer_resize_start = Some(ComposerResizeStart {
+            y,
+            rows: self.input_rows,
+        });
+        cx.stop_propagation();
+    }
+
+    fn drag_composer_resize(&mut self, y: Pixels, window: &Window, cx: &mut Context<Self>) {
+        let Some(start) = self.composer_resize_start else {
+            return;
+        };
+        let row_height = composer_row_height(cx);
+        let max_rows = composer_max_rows(window, row_height);
+        let delta_rows = (f32::from(start.y - y) / row_height).round() as isize;
+        let rows = (start.rows as isize + delta_rows)
+            .clamp(COMPOSER_MIN_ROWS as isize, max_rows as isize) as usize;
+        if self.composer_rows_override != Some(rows) {
+            self.composer_rows_override = Some(rows);
+            self.set_input_rows(rows, cx);
+            cx.notify();
+        }
+    }
+
+    fn finish_composer_resize(&mut self) {
+        self.composer_resize_start = None;
+    }
+
+    fn reset_composer_height(&mut self, cx: &mut Context<Self>) {
+        self.composer_rows_override = None;
+        let rows = prompt_rows(&self.input_source(cx));
+        self.set_input_rows(rows, cx);
     }
 
     fn focus_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -606,9 +703,15 @@ impl AiAssistantPanel {
                 });
             } else {
                 match read_attachment(path) {
-                    Ok(content) => {
+                    Ok(AttachmentContent::Inline(content)) => {
                         file_context.push_str(&format!(
                             "\n\n<file path=\"{}\">\n{content}\n</file>",
+                            path.display()
+                        ));
+                    }
+                    Ok(AttachmentContent::Reference { size }) => {
+                        file_context.push_str(&format!(
+                            "\n\n<file path=\"{}\" bytes=\"{size}\">\nThis file is too large to inline. Use the available file-reading and search tools to inspect only the relevant portions.\n</file>",
                             path.display()
                         ));
                     }
@@ -1476,9 +1579,8 @@ impl AiAssistantPanel {
         let input_focus = self.input.read(cx).focus_handle(cx);
         let focused = input_focus.is_focused(window);
         let show_placeholder = input_text.is_empty() && !focused;
-        let editor_height =
-            px(cx.theme().mono_font_size.as_f32() * (1.5 * self.input_rows as f32) + 16.);
-        let placeholder = t!("ai.composer.placeholder");
+        let editor_height = composer_editor_height(composer_row_height(cx), self.input_rows);
+        let placeholder = composer_placeholder(self.ai(cx).send_shortcut);
         let empty = input_empty && self.attachments.is_empty();
         let busy = self.busy;
         let stopping = self.stopping;
@@ -1585,6 +1687,51 @@ impl AiAssistantPanel {
                     }),
             );
 
+        let hover = cx.theme().list_hover.opacity(0.45);
+        let grip = cx
+            .theme()
+            .muted_foreground
+            .opacity(if self.composer_rows_override.is_some() {
+                0.8
+            } else {
+                0.45
+            });
+        let resize_handle = h_flex()
+            .id("ai-composer-resize")
+            .test_support()
+            .w_full()
+            .h(rems(0.5))
+            .justify_center()
+            .items_center()
+            .cursor(CursorStyle::ResizeUpDown)
+            .aria_label(t!("ai.composer.resize_height"))
+            .occlude()
+            .hover(move |style| style.bg(hover))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    this.start_composer_resize(event.position.y, cx);
+                }),
+            )
+            .on_drag(ComposerResizeDrag, |_, _, _, cx| {
+                cx.new(|_| ComposerResizeDrag)
+            })
+            .on_drag_move(cx.listener(
+                |this, event: &DragMoveEvent<ComposerResizeDrag>, window, cx| {
+                    this.drag_composer_resize(event.event.position.y, window, cx);
+                },
+            ))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.finish_composer_resize()),
+            )
+            .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                if event.click_count() == 2 {
+                    this.reset_composer_height(cx);
+                }
+            }))
+            .child(div().w(rems(2.)).h(rems(0.25)).rounded_full().bg(grip));
+
         let composer = v_flex()
             .id("ai-composer")
             .test_support()
@@ -1681,6 +1828,7 @@ impl AiAssistantPanel {
         v_flex()
             .w_full()
             .gap_2()
+            .child(resize_handle)
             .child(composer)
             .when_some(skill_menu, |this, menu| this.child(menu))
             .into_any_element()
@@ -3766,8 +3914,13 @@ fn claude_image_data(path: &Path) -> Result<String, SharedString> {
     Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
-fn read_attachment(path: &PathBuf) -> Result<String, SharedString> {
-    const LIMIT: u64 = 512 * 1024;
+#[derive(Debug, PartialEq, Eq)]
+enum AttachmentContent {
+    Inline(String),
+    Reference { size: u64 },
+}
+
+fn read_attachment(path: &Path) -> Result<AttachmentContent, SharedString> {
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -3781,16 +3934,21 @@ fn read_attachment(path: &PathBuf) -> Result<String, SharedString> {
             )
         })?
         .len();
-    if size > LIMIT {
+    if size > MAX_ATTACHMENT_BYTES {
         return Err(t!("ai.attachments.too_large", name = name));
     }
-    std::fs::read_to_string(path).map_err(|error| {
-        t!(
-            "ai.attachments.unreadable",
-            name = name,
-            error = error.to_string()
-        )
-    })
+    if size > MAX_INLINE_ATTACHMENT_BYTES {
+        return Ok(AttachmentContent::Reference { size });
+    }
+    std::fs::read_to_string(path)
+        .map(AttachmentContent::Inline)
+        .map_err(|error| {
+            t!(
+                "ai.attachments.unreadable",
+                name = name,
+                error = error.to_string()
+            )
+        })
 }
 
 static MARKDOWN_IMAGES: OnceLock<Mutex<HashMap<String, Arc<Image>>>> = OnceLock::new();
@@ -4425,18 +4583,47 @@ pub(crate) fn open_history_dialog(
 #[cfg(test)]
 mod tests {
     use super::{
-        AiAssistantPanel, Author, ClaudeEvent, Message, ToolCall, ToolStatus, append_tool_call,
-        claude_media_type, coalesce_claude_events, decode_data_image, format_tokens,
-        image_format_for_path, is_image_path, local_image_path, sniff_image_format, streaming_tail,
-        tool_file_change, tool_group_title, tool_input_text, tool_summary, tool_title_key,
+        AiAssistantPanel, AiSendShortcut, AttachmentContent, Author, ClaudeEvent,
+        MAX_ATTACHMENT_BYTES, MAX_INLINE_ATTACHMENT_BYTES, Message, ToolCall, ToolStatus,
+        append_tool_call, claude_media_type, coalesce_claude_events, decode_data_image,
+        format_tokens, image_format_for_path, is_image_path, is_send_shortcut, local_image_path,
+        read_attachment, sniff_image_format, streaming_tail, tool_file_change, tool_group_title,
+        tool_input_text, tool_summary, tool_title_key,
     };
     use claude_codes::MediaType;
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{
-        AppContext as _, Context, Entity, Focusable as _, ImageFormat, IntoElement, ParentElement,
-        Render, Styled, Window, div,
+        AppContext as _, Context, Entity, Focusable as _, ImageFormat, IntoElement, Keystroke,
+        Modifiers, ParentElement, Render, Styled, Window, div,
     };
     use std::{cell::RefCell, path::Path, rc::Rc};
+
+    #[test]
+    fn ai_send_shortcut_matches_the_setting_without_extra_modifiers() {
+        let enter = |modifiers| Keystroke {
+            key: "enter".into(),
+            modifiers,
+            key_char: None,
+        };
+        let plain = enter(Modifiers::default());
+        let secondary = enter(Modifiers {
+            control: !cfg!(target_os = "macos"),
+            platform: cfg!(target_os = "macos"),
+            ..Modifiers::default()
+        });
+        let extra = enter(Modifiers {
+            control: !cfg!(target_os = "macos"),
+            platform: cfg!(target_os = "macos"),
+            shift: true,
+            ..Modifiers::default()
+        });
+
+        assert!(is_send_shortcut(AiSendShortcut::Enter, &plain));
+        assert!(!is_send_shortcut(AiSendShortcut::ModifierEnter, &plain));
+        assert!(!is_send_shortcut(AiSendShortcut::Enter, &secondary));
+        assert!(is_send_shortcut(AiSendShortcut::ModifierEnter, &secondary));
+        assert!(!is_send_shortcut(AiSendShortcut::ModifierEnter, &extra));
+    }
 
     #[test]
     fn token_counts_are_compact_for_the_context_tooltip() {
@@ -4506,6 +4693,32 @@ mod tests {
             Some(MediaType::Png)
         );
         assert_eq!(claude_media_type(Path::new("notes.txt")), None);
+    }
+
+    #[test]
+    fn large_text_attachments_are_referenced_and_oversized_ones_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let inline_path = directory.path().join("small.txt");
+        std::fs::write(&inline_path, "small").unwrap();
+        assert_eq!(
+            read_attachment(&inline_path).unwrap(),
+            AttachmentContent::Inline("small".into())
+        );
+
+        let reference_path = directory.path().join("large.txt");
+        let file = std::fs::File::create(&reference_path).unwrap();
+        file.set_len(MAX_INLINE_ATTACHMENT_BYTES + 1).unwrap();
+        assert_eq!(
+            read_attachment(&reference_path).unwrap(),
+            AttachmentContent::Reference {
+                size: MAX_INLINE_ATTACHMENT_BYTES + 1
+            }
+        );
+
+        let oversized_path = directory.path().join("oversized.txt");
+        let file = std::fs::File::create(&oversized_path).unwrap();
+        file.set_len(MAX_ATTACHMENT_BYTES + 1).unwrap();
+        assert!(read_attachment(&oversized_path).is_err());
     }
 
     #[test]

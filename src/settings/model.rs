@@ -573,6 +573,8 @@ pub const AI_RECENT_OUTPUT_RANGE: std::ops::RangeInclusive<u32> = 0..=1000;
 pub struct AiAssistantSettings {
     /// 启用 AI 助手.
     pub enabled: bool,
+    /// What sends a message from the AI composer.
+    pub send_shortcut: AiSendShortcut,
     /// API 环境, in the order the settings page lists them.
     pub environments: Vec<AiEnvironment>,
     /// The environment in use, by `AiEnvironment::id`.
@@ -609,6 +611,7 @@ impl Default for AiAssistantSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            send_shortcut: AiSendShortcut::ModifierEnter,
             environments: vec![
                 AiEnvironment {
                     id: 1,
@@ -790,6 +793,16 @@ pub enum AiDisplayLevel {
     Detailed,
 }
 
+/// What sends a message from the AI composer: Enter, or the platform's
+/// secondary modifier with Enter (⌘Enter on macOS, Ctrl+Enter elsewhere).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiSendShortcut {
+    Enter,
+    #[default]
+    ModifierEnter,
+}
+
 /// The wire protocol an API environment speaks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -961,6 +974,31 @@ impl Choice for AiDisplayLevel {
             Self::Compact => t!("settings.ai.display.compact"),
             Self::Standard => t!("settings.ai.display.standard"),
             Self::Detailed => t!("settings.ai.display.detailed"),
+        }
+    }
+}
+
+impl Choice for AiSendShortcut {
+    const ALL: &'static [Self] = &[Self::Enter, Self::ModifierEnter];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Enter => "enter",
+            Self::ModifierEnter => "modifier-enter",
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::Enter => t!("settings.ai.send_shortcut.enter"),
+            Self::ModifierEnter => t!(
+                "settings.ai.send_shortcut.modifier_enter",
+                key = if cfg!(target_os = "macos") {
+                    "⌘"
+                } else {
+                    "Ctrl"
+                }
+            ),
         }
     }
 }
@@ -1283,6 +1321,7 @@ mod tests {
         check::<TerminalCursorStyle>();
         check::<FileIconStyle>();
         check::<AiNetworkAccess>();
+        check::<AiSendShortcut>();
         check::<AiConfirmationStrategy>();
         check::<AiExecutionMode>();
         check::<AiDisplayLevel>();
@@ -1295,6 +1334,7 @@ mod tests {
     fn ai_assistant_settings_start_with_example_environments_and_stay_in_range() {
         let settings = AppSettings::default();
         assert!(!settings.ai.enabled);
+        assert_eq!(settings.ai.send_shortcut, AiSendShortcut::ModifierEnter);
         assert_eq!(settings.ai.environments.len(), 2);
         assert_eq!(settings.ai.active_environment, Some(1));
         assert_eq!(settings.ai.max_rounds, 100);

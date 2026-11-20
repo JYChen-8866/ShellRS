@@ -5,6 +5,7 @@
 mod analytics;
 mod app_lock;
 mod app_shell;
+mod archive;
 mod cli_changes;
 mod compose;
 mod compose_history;

@@ -28,6 +28,7 @@ fn the_ai_tool_opens_in_the_right_sidebar_for_the_remote_terminal(cx: &mut TestA
         assert!(window.find("ai-history").visible());
         assert!(window.find("ai-new-chat").visible());
         assert!(window.find("ai-attach").visible());
+        assert!(window.find("ai-composer-resize").visible());
         assert!(window.find("ai-confirmation").visible());
         assert!(window.find("ai-model").visible());
         assert!(window.find("ai-send").visible());
@@ -47,6 +48,56 @@ fn the_ai_tool_opens_in_the_right_sidebar_for_the_remote_terminal(cx: &mut TestA
                 "{id} should float inside the composer: {control:?} {composer:?}"
             );
         }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn dragging_the_ai_composer_handle_changes_its_height_and_double_click_resets_it(
+    cx: &mut TestAppContext,
+) {
+    let (handle, _) = open_workspace(cx);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("tool-ai", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let initial_height = cx
+        .update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.find("ai-composer").bounds().size.height
+        })
+        .unwrap();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        let handle = window.find("ai-composer-resize").bounds();
+        let from = point(handle.center().x, handle.top() + px(2.));
+        window.drag(from, point(from.x, from.y - px(96.)), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let expanded_height = window.find("ai-composer").bounds().size.height;
+        assert!(
+            expanded_height > initial_height + px(48.),
+            "drag should make the composer taller: {initial_height:?} -> {expanded_height:?}"
+        );
+        window.double_click("ai-composer-resize", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("ai-composer").bounds().size.height,
+            initial_height
+        );
     })
     .unwrap();
 }

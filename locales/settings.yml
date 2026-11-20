@@ -809,6 +809,20 @@ settings.sync.change:
   zh-CN: 更换…
   en: Change…
 
+# The AI composer's send key, on 设置 › 键盘快捷键.
+settings.ai.send_shortcut:
+  zh-CN: 发送消息
+  en: Send message
+settings.ai.send_shortcut_description:
+  zh-CN: 选 Enter 时，Shift+Enter 换行；选 %{key}+Enter 时，Enter 换行。
+  en: With Enter, Shift+Enter adds a new line. With %{key}+Enter, Enter adds a new line.
+settings.ai.send_shortcut.enter:
+  zh-CN: Enter
+  en: Enter
+settings.ai.send_shortcut.modifier_enter:
+  zh-CN: "%{key} + Enter"
+  en: "%{key} + Enter"
+
 # Labels used by the AI panel's existing choices.
 settings.ai.network.system:
   zh-CN: 跟随系统代理
