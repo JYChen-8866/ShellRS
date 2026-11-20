@@ -4,6 +4,22 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.27] - 2026-11-20
+
+### Added
+
+- The AI composer now has a draggable height handle. Drag it up or down to resize the composer; double-click it to restore the automatic 3–7 row height.
+- Settings › Keyboard Shortcuts now lets AI messages be sent with Enter or with the platform shortcut, ⌘Enter on macOS and Ctrl+Enter elsewhere.
+- Files in the right sidebar now have file and folder context actions for copying names or addresses, renaming, and compressing or extracting with the remote system's archivers. ZIP and TAR.GZ creation are supported, along with common archive formats for extraction.
+
+### Improved
+
+- AI attachments are now accepted up to 100 MB. Text up to 512 KB is included inline; larger files are passed to Claude by path so it can inspect them with its file tools.
+
+### Fixed
+
+- File and folder right-click menus in the right sidebar's Files list now render reliably.
+
 ## [0.1.26] - 2026-11-17
 
 ### Added
