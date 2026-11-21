@@ -86,18 +86,7 @@ pub(super) fn item_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
     } else {
         menu
     };
-    let (verb, icon) = if remote {
-        (t!("explorer.command.download"), CatalogIcon::Download)
-    } else {
-        (t!("explorer.command.upload"), CatalogIcon::Upload)
-    };
-    let menu = menu
-        .menu_with_icon_and_disabled(
-            verb,
-            Icon::new(icon),
-            state.action(ExplorerCommand::Transfer { remote }),
-            state.targets.is_empty() || !state.can_transfer,
-        )
+    let menu = transfer_items(menu.separator(), state)
         .menu_with_icon_and_disabled(
             t!("explorer.command.copy_name"),
             Icon::new(IconName::Copy),
@@ -133,7 +122,8 @@ pub(super) fn item_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
     } else {
         menu
     };
-    menu.separator()
+    create_items(menu.separator(), state)
+        .separator()
         .menu_with_icon_and_disabled(
             t!("explorer.command.rename"),
             Icon::new(CatalogIcon::SquarePen),
@@ -161,7 +151,6 @@ pub(super) fn directory_menu(
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
-    let create = state.clone();
     let mut menu = refresh_items(menu, state, window, cx).menu_with_check(
         t!("explorer.command.show_hidden_files"),
         state.show_hidden,
@@ -174,12 +163,68 @@ pub(super) fn directory_menu(
             state.action(ExplorerCommand::FindFiles),
         );
     }
-    let menu = menu.separator();
-    add_bookmark_item(menu, state).separator().submenu(
-        t!("explorer.command.new"),
-        window,
-        cx,
-        move |menu, _, _| new_menu(menu, &create),
+    let menu = transfer_items(menu.separator(), state).separator();
+    let menu = create_items(menu, state).separator();
+    add_bookmark_item(menu, state)
+}
+
+/// Upload and download commands for a row or the directory itself. On a
+/// remote pane, upload opens the local file picker and download transfers
+/// the selected remote rows. On a local pane, upload transfers the selected
+/// local rows; download has no source to act on.
+fn transfer_items(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
+    let upload = if state.remote {
+        (
+            t!("explorer.command.upload"),
+            ExplorerCommand::ChooseFiles,
+            !state.can_transfer,
+        )
+    } else {
+        (
+            t!("explorer.command.upload"),
+            ExplorerCommand::Transfer { remote: false },
+            state.targets.is_empty() || !state.can_transfer,
+        )
+    };
+    let menu = menu.menu_with_icon_and_disabled(
+        upload.0,
+        Icon::new(CatalogIcon::Upload),
+        state.action(upload.1),
+        upload.2,
+    );
+    if state.remote {
+        menu.menu_with_icon_and_disabled(
+            t!("explorer.command.download"),
+            Icon::new(CatalogIcon::Download),
+            state.action(ExplorerCommand::Transfer { remote: true }),
+            state.targets.is_empty() || !state.can_transfer,
+        )
+    } else {
+        menu
+    }
+}
+
+/// 新建文件 and 新建文件夹, directly in the context menu instead of behind a
+/// submenu so both are visible at a glance.
+fn create_items(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
+    let remote = state.remote;
+    menu.menu_with_icon_and_disabled(
+        t!("explorer.command.create_folder"),
+        Icon::new(CatalogIcon::FolderPlus),
+        state.action(ExplorerCommand::New {
+            remote,
+            kind: NewEntryKind::Folder,
+        }),
+        !state.can_modify,
+    )
+    .menu_with_icon_and_disabled(
+        t!("explorer.command.create_file"),
+        Icon::new(CatalogIcon::FilePlus),
+        state.action(ExplorerCommand::New {
+            remote,
+            kind: NewEntryKind::File,
+        }),
+        !state.can_modify,
     )
 }
 
@@ -281,7 +326,7 @@ pub(super) fn size_format_menu(menu: PopupMenu, current: FileSizeFormat) -> Popu
     )
 }
 
-/// The toolbar's 新建 menu, also the context menu's 新建 submenu.
+/// The toolbar's 新建 menu.
 pub(super) fn new_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
     let remote = state.remote;
     menu.menu_with_icon_and_disabled(
